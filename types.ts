@@ -52,6 +52,7 @@ export interface AppSettings {
     fontSize: FontSize;
     fontFamily: FontFamily;
     theme: Theme;
+    apiKey: string;
 }
 
 export enum GrammarRole { 

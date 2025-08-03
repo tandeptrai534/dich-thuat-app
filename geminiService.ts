@@ -1,17 +1,6 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import type { AnalyzedText, GrammarRole } from './types';
-
-// Helper function to initialize the AI client and check for API key
-const getAiClient = () => {
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-        // This error will be caught by the calling function and displayed in the UI
-        // instead of crashing the entire application.
-        throw new Error("Lỗi: Khóa API chưa được thiết lập. Vui lòng kiểm tra lại biến môi trường API_KEY trong cài đặt của Netlify.");
-    }
-    return new GoogleGenAI({ apiKey });
-};
-
+import type { AnalyzedText } from './types';
 
 const analysisSystemInstruction = `You are an expert linguist and translator specializing in Chinese and Vietnamese. Your task is to perform a detailed grammatical analysis and translation of a single Chinese sentence.
 
@@ -100,9 +89,13 @@ const translationSystemInstruction = `You are an expert translator specializing 
 6.  **Output:** Return ONLY the translated Vietnamese text, with no extra explanations, titles, or formatting.
 `;
 
-export const analyzeSentence = async (sentence: string): Promise<AnalyzedText> => {
+export const analyzeSentence = async (sentence: string, apiKey: string): Promise<AnalyzedText> => {
     try {
-        const ai = getAiClient(); // Initialize and check for API key here
+        if (!apiKey) {
+            throw new Error("Lỗi: Khóa API chưa được thiết lập. Vui lòng vào Cài đặt để nhập khóa API của bạn.");
+        }
+        const ai = new GoogleGenAI({ apiKey });
+
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: `Please analyze and translate this sentence: "${sentence}"`,
@@ -136,9 +129,13 @@ export const analyzeSentence = async (sentence: string): Promise<AnalyzedText> =
     }
 };
 
-export const translateChapter = async (chapterContent: string): Promise<string> => {
+export const translateChapter = async (chapterContent: string, apiKey: string): Promise<string> => {
     try {
-        const ai = getAiClient(); // Initialize and check for API key here
+        if (!apiKey) {
+            throw new Error("Lỗi: Khóa API chưa được thiết lập. Vui lòng vào Cài đặt để nhập khóa API của bạn.");
+        }
+        const ai = new GoogleGenAI({ apiKey });
+
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: chapterContent,

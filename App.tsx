@@ -541,6 +541,16 @@ const SettingsPanel: React.FC<{
                 onClick={e => e.stopPropagation()}
             >
                 <div>
+                    <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Khóa API Gemini</h3>
+                    <input
+                        type="password"
+                        value={settings.apiKey}
+                        onChange={(e) => setSettings(s => ({ ...s, apiKey: e.target.value }))}
+                        placeholder="Dán khóa API của bạn vào đây"
+                        className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                    />
+                </div>
+                <div>
                     <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Cỡ chữ (px)</h3>
                      <input
                         type="number"
@@ -635,6 +645,7 @@ const App = () => {
         fontSize: 16,
         fontFamily: 'font-sans',
         theme: 'light',
+        apiKey: '',
     });
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
@@ -761,13 +772,13 @@ const App = () => {
         updateSentence({ analysisState: 'loading' });
 
         try {
-            const result = await analyzeSentence(sentence.original);
+            const result = await analyzeSentence(sentence.original, settings.apiKey);
             setAnalysisCache(prevCache => new Map(prevCache).set(sentence.original, result));
             updateSentence({ analysisState: 'done', analysisResult: result, isExpanded: true });
         } catch (err: any) {
             updateSentence({ analysisState: 'error', error: err.message });
         }
-    }, [activeFileId, processedFiles, analysisCache]);
+    }, [activeFileId, processedFiles, analysisCache, settings.apiKey]);
 
     const handleChapterUpdate = useCallback((chapterIndex: number, newState: Partial<ChapterData>) => {
         setProcessedFiles(prevFiles => prevFiles.map(file => {
@@ -793,7 +804,7 @@ const App = () => {
             if (!file) throw new Error("File not found");
             const chapterContent = file.chapters[chapterIndex].sentences.map(s => s.original).join('\\n');
             
-            const result = await translateChapter(chapterContent);
+            const result = await translateChapter(chapterContent, settings.apiKey);
 
             setProcessedFiles(prevFiles => prevFiles.map(file => {
                 if (file.id !== activeFileId) return file;
@@ -810,7 +821,7 @@ const App = () => {
                 return { ...file, chapters: newChapters };
             }));
         }
-    }, [activeFileId, processedFiles]);
+    }, [activeFileId, processedFiles, settings.apiKey]);
 
     const handleBackToSentenceAnalysis = useCallback((chapterIndex: number) => {
         setProcessedFiles(prevFiles => prevFiles.map(file => {
