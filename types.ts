@@ -21,6 +21,7 @@ export interface SentenceData {
     analysisResult?: AnalyzedText;
     error?: string;
     isExpanded: boolean;
+    isTitle?: boolean;
 }
 
 export interface ChapterData {
@@ -49,10 +50,10 @@ export type FontSize = number;
 export type FontFamily = 'font-sans' | 'font-serif' | 'font-mono';
 
 export interface AppSettings {
+    apiKey?: string;
     fontSize: FontSize;
     fontFamily: FontFamily;
     theme: Theme;
-    apiKey: string;
 }
 
 export enum GrammarRole { 

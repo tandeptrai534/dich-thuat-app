@@ -1,9 +1,9 @@
 
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
-import { analyzeSentence, translateChapter } from './geminiService';
-import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, AnalyzedText, TranslationSegment, TokenData } from './types';
+import { analyzeSentence, translateChapter } from './services/geminiService';
+import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, AnalyzedText, TokenData } from './types';
 import { InputArea } from './components/InputArea';
-import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon } from './components/common/icons';
+import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { OutputDisplay } from './components/OutputDisplay';
@@ -16,7 +16,8 @@ const DEFAULT_CHAPTER_TITLE = 'Văn bản chính';
 const MAX_CHAPTER_LENGTH = 5000;
 const PAGE_SIZE = 10;
 const SETTINGS_STORAGE_KEY = 'chinese_analyzer_settings';
-const CACHE_STORAGE_KEY = 'chinese_analyzer_cache';
+const ANALYSIS_CACHE_STORAGE_KEY = 'chinese_analyzer_analysis_cache';
+const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
 const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary';
 
 // --- Theme & Settings ---
@@ -124,9 +125,16 @@ function processTextIntoChapters(text: string): ChapterData[] {
 
     const createChapterData = (title: string, content: string): void => {
         splitLargeChapter(title, content).forEach(chunk => {
+            const titleSentence: SentenceData = {
+                original: chunk.title,
+                analysisState: 'pending',
+                isExpanded: false,
+                isTitle: true,
+            };
+
             chapters.push({
                 title: chunk.title,
-                sentences: chunk.sentences,
+                sentences: [titleSentence, ...chunk.sentences],
                 translationState: 'pending',
                 isExpanded: false,
             });
@@ -161,31 +169,123 @@ function processTextIntoChapters(text: string): ChapterData[] {
 
 
 // --- UI Components ---
+
+const AdvancedCopyButton: React.FC<{ chapter: ChapterData }> = ({ chapter }) => {
+    const { theme } = useSettings();
+    const [isOptionsOpen, setIsOptionsOpen] = useState(false);
+    const [copyOptions, setCopyOptions] = useState({
+        original: true,
+        pinyin: true,
+        sinoVietnamese: true,
+        translation: true,
+    });
+    const [justCopied, setJustCopied] = useState(false);
+
+    const handleCopy = () => {
+        let fullText = '';
+        const analyzedSentences = chapter.sentences.filter(s => s.analysisState === 'done' && s.analysisResult);
+        
+        if (copyOptions.original) {
+            fullText += '--- VĂN BẢN GỐC ---\n';
+            fullText += chapter.sentences.map(s => s.original).join('\n') + '\n\n';
+        }
+        if (copyOptions.pinyin) {
+            fullText += '--- PINYIN ---\n';
+            fullText += analyzedSentences.map(s => s.analysisResult!.tokens.map(t => t.pinyin).join(' ')).join('\n') + '\n\n';
+        }
+        if (copyOptions.sinoVietnamese) {
+            fullText += '--- HÁN VIỆT ---\n';
+            fullText += analyzedSentences.map(s => s.analysisResult!.tokens.map(t => t.sinoVietnamese).join(' ')).join('\n') + '\n\n';
+        }
+        if (copyOptions.translation && chapter.translationResult) {
+            fullText += '--- BẢN DỊCH ---\n';
+            fullText += chapter.translationResult + '\n';
+        }
+        
+        navigator.clipboard.writeText(fullText.trim());
+        setJustCopied(true);
+        setTimeout(() => setJustCopied(false), 2000);
+        setIsOptionsOpen(false);
+    };
+
+    const CheckboxOption: React.FC<{ id: keyof typeof copyOptions, label: string }> = ({ id, label }) => (
+        <label htmlFor={id} className="flex items-center gap-2 p-2 rounded-md hover:bg-slate-200 dark:hover:bg-gray-700 cursor-pointer">
+            <input
+                type="checkbox"
+                id={id}
+                checked={copyOptions[id]}
+                onChange={e => setCopyOptions(prev => ({...prev, [id]: e.target.checked }))}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium">{label}</span>
+        </label>
+    );
+
+    return (
+        <div className="relative">
+            <button 
+                onClick={() => setIsOptionsOpen(o => !o)}
+                className={`flex items-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}
+            >
+                <CopyIcon className="w-4 h-4" />
+                <span>{justCopied ? 'Đã sao chép!' : 'Sao chép Nâng cao'}</span>
+            </button>
+            {isOptionsOpen && (
+                <div 
+                    className={`absolute bottom-full right-0 mb-2 w-60 p-2 rounded-lg shadow-xl border ${theme.border} ${theme.cardBg} z-10`}
+                >
+                    <p className={`text-sm font-semibold p-2 ${theme.mutedText}`}>Tùy chọn sao chép:</p>
+                    <div className="flex flex-col">
+                        <CheckboxOption id="original" label="Văn bản gốc" />
+                        <CheckboxOption id="pinyin" label="Pinyin" />
+                        <CheckboxOption id="sinoVietnamese" label="Hán Việt" />
+                        <CheckboxOption id="translation" label="Bản dịch" />
+                    </div>
+                    <div className="p-2 mt-1">
+                        <button
+                            onClick={handleCopy}
+                            className={`w-full px-4 py-2 ${theme.primaryButton.bg} ${theme.primaryButton.text} font-semibold rounded-md shadow-sm ${theme.primaryButton.hoverBg} transition-colors`}
+                        >
+                            Sao chép
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const SentenceDisplay: React.FC<{
     sentence: SentenceData;
     onClick: () => void;
     onSaveToken: (token: TokenData) => void;
 }> = ({ sentence, onClick, onSaveToken }) => {
     const { settings, theme } = useSettings();
-    
+
     const renderContent = () => {
+        const titleSpecificClass = sentence.isTitle ? `text-center border-b-2 ${theme.border} pb-3 mb-3` : '';
+
         switch(sentence.analysisState) {
             case 'pending':
                 return (
-                    <p className={`p-3 rounded-lg cursor-pointer ${theme.hoverBg} transition-colors`}>
-                        {sentence.original}
-                    </p>
+                    <div className={`p-3 rounded-lg cursor-pointer ${theme.hoverBg} transition-colors ${titleSpecificClass}`}>
+                        {sentence.isTitle ? (
+                             <h4 className={`text-xl font-bold ${theme.text}`}>{sentence.original}</h4>
+                        ) : (
+                            <p>{sentence.original}</p>
+                        )}
+                    </div>
                 );
             case 'loading':
                  return (
-                    <div className="flex items-center justify-center gap-2 p-3">
+                    <div className={`flex items-center justify-center gap-2 p-3 ${titleSpecificClass}`}>
                         <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
                         <span className={theme.mutedText}>Đang phân tích...</span>
                     </div>
                 );
             case 'error':
                  return (
-                    <div className="p-3 bg-red-50 text-red-700 rounded-lg cursor-pointer">
+                    <div className={`p-3 bg-red-50 text-red-700 rounded-lg cursor-pointer ${titleSpecificClass}`}>
                         <p><strong>Lỗi:</strong> {sentence.error}</p>
                         <p className="font-semibold">Nhấp để thử lại.</p>
                     </div>
@@ -193,11 +293,16 @@ const SentenceDisplay: React.FC<{
             case 'done':
                  if (!sentence.analysisResult) return null;
                  if (sentence.isExpanded) {
-                     return <OutputDisplay data={sentence.analysisResult} onSaveToken={onSaveToken} />;
+                     return (
+                         <div className={titleSpecificClass}>
+                             <OutputDisplay data={sentence.analysisResult} onSaveToken={onSaveToken} />
+                         </div>
+                     );
                  }
                  // Collapsed View
                  return (
-                     <div className="p-3 space-y-3 cursor-pointer">
+                     <div className={`p-3 space-y-3 cursor-pointer ${titleSpecificClass}`}>
+                         {sentence.isTitle && <h4 className={`text-xl font-bold ${theme.text} mb-2`}>{sentence.original}</h4>}
                          <div className="flex flex-wrap items-end gap-x-2 gap-y-3 leading-tight">
                             {sentence.analysisResult.tokens.map((token, index) => {
                                  const color = GRAMMAR_COLOR_MAP[token.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
@@ -238,21 +343,18 @@ const SentenceDisplay: React.FC<{
 
 const ChapterDisplay: React.FC<{
     chapter: ChapterData;
+    chapterIndex: number;
     onSentenceClick: (sentenceIndex: number) => void;
     onTranslate: () => void;
     onBackToAnalysis: () => void;
     onUpdate: (update: Partial<ChapterData>) => void;
     onSaveToken: (token: TokenData) => void;
-}> = ({ chapter, onSentenceClick, onTranslate, onBackToAnalysis, onUpdate, onSaveToken }) => {
+}> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onBackToAnalysis, onUpdate, onSaveToken }) => {
     const { settings, theme } = useSettings();
     const isTranslating = chapter.translationState === 'loading';
     const isTranslationDone = chapter.translationState === 'done';
     const isTranslationError = chapter.translationState === 'error';
     const isSentenceAnalysisView = chapter.translationState === 'pending';
-
-    const handleCopy = (text: string) => {
-        navigator.clipboard.writeText(text);
-    };
 
     const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
         onUpdate({ isExpanded: e.currentTarget.open });
@@ -265,8 +367,11 @@ const ChapterDisplay: React.FC<{
             onToggle={handleToggle}
         >
             <summary className={`flex justify-between items-center p-4 cursor-pointer hover:${theme.hoverBg} transition-colors`}>
-                <div className="flex items-center min-w-0">
+                <div className="flex items-center min-w-0 flex-1">
                     <ChevronDownIcon className={`w-5 h-5 mr-3 ${theme.mutedText} transition-transform duration-200 group-open:rotate-180 flex-shrink-0`} />
+                    <span className={`flex-shrink-0 mr-3 px-2.5 py-1 text-xs font-semibold tracking-wider uppercase rounded-full ${theme.button.bg} ${theme.mutedText}`}>
+                        #{chapterIndex + 1}
+                    </span>
                     <h3 className={`text-lg font-bold ${theme.text} truncate`} title={chapter.title}>{chapter.title}</h3>
                 </div>
                  <div className="flex-shrink-0 ml-4">
@@ -287,7 +392,7 @@ const ChapterDisplay: React.FC<{
                      {isTranslationDone && (
                         <div className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
                            <CheckIcon className="w-4 h-4" />
-                           <span>Đã dịch</span>
+                           <span>Đã dịch & phân tích</span>
                         </div>
                     )}
                 </div>
@@ -306,8 +411,9 @@ const ChapterDisplay: React.FC<{
                    </div>
                )}
                {isTranslating && (
-                   <div className="flex items-center justify-center p-8">
+                   <div className="flex flex-col items-center justify-center p-8 gap-3">
                        <Spinner variant={settings.theme === 'dark' ? 'light' : 'dark'} />
+                       <span className={theme.mutedText}>Đang dịch và phân tích nền...</span>
                    </div>
                )}
                {isTranslationError && (
@@ -319,33 +425,41 @@ const ChapterDisplay: React.FC<{
                     </div>
                )}
                {isTranslationDone && chapter.translationResult && (
-                   <div className="space-y-4">
-                       <div>
-                           <h4 className={`font-semibold mb-2 ${theme.text}`}>Nội dung gốc:</h4>
-                           <div className="relative group/copy">
-                               <pre className={`whitespace-pre-wrap p-3 rounded-md ${theme.mainBg} ${theme.mutedText} max-h-96 overflow-y-auto font-sans`}>
-                                   {chapter.sentences.map(s => s.original).join('\n')}
-                               </pre>
-                               <button onClick={() => handleCopy(chapter.sentences.map(s => s.original).join('\n'))} className={`absolute top-2 right-2 p-1.5 rounded-md ${theme.button.bg} ${theme.mutedText} opacity-0 group-hover/copy:opacity-100 transition-opacity`}>
-                                    <CopyIcon className="w-4 h-4" />
-                               </button>
-                           </div>
-                       </div>
-                        <div>
-                           <h4 className={`font-semibold mb-2 ${theme.text}`}>Bản dịch:</h4>
-                            <div className="relative group/copy">
-                                <pre className={`whitespace-pre-wrap p-3 rounded-md ${theme.mainBg} ${theme.text} max-h-96 overflow-y-auto font-sans`}>
-                                   {chapter.translationResult}
-                               </pre>
-                                <button onClick={() => handleCopy(chapter.translationResult!)} className={`absolute top-2 right-2 p-1.5 rounded-md ${theme.button.bg} ${theme.mutedText} opacity-0 group-hover/copy:opacity-100 transition-opacity`}>
-                                    <CopyIcon className="w-4 h-4" />
-                                </button>
-                           </div>
-                       </div>
-                       <div className="flex justify-start">
+                   <div className="space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <h4 className={`font-semibold mb-2 ${theme.text}`}>Nội dung gốc (đã phân tích):</h4>
+                                <div className={`p-3 rounded-md ${theme.mainBg} max-h-[60vh] overflow-y-auto space-y-3`}>
+                                    {chapter.sentences.map((sentence, index) => {
+                                        if (sentence.analysisState === 'done' && sentence.analysisResult) {
+                                            return (
+                                                <div key={index} className={`${sentence.isTitle ? 'pb-2 border-b ' + theme.border : ''}`}>
+                                                    <p className="flex flex-wrap items-end gap-x-1.5 gap-y-2 leading-tight">
+                                                        {sentence.analysisResult.tokens.map((token, tIndex) => {
+                                                            const color = GRAMMAR_COLOR_MAP[token.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
+                                                            const tokenTextColor = settings.theme === 'dark' ? `text-${color.bg.split('-')[1]}-300` : color.text;
+                                                            return <span key={tIndex} className={`font-semibold text-lg ${tokenTextColor}`}>{token.character}</span>;
+                                                        })}
+                                                    </p>
+                                                </div>
+                                            )
+                                        }
+                                        return <p key={index} className={`${theme.mutedText} ${sentence.isTitle ? 'font-bold text-lg' : ''}`}>{sentence.original}</p>
+                                    })}
+                                </div>
+                            </div>
+                             <div>
+                                <h4 className={`font-semibold mb-2 ${theme.text}`}>Bản dịch:</h4>
+                                <div className={`p-3 rounded-md ${theme.mainBg} ${theme.text} max-h-[60vh] overflow-y-auto`}>
+                                    <pre className="whitespace-pre-wrap font-sans">{chapter.translationResult}</pre>
+                                </div>
+                            </div>
+                        </div>
+                       <div className="flex justify-between items-center">
                             <button onClick={onBackToAnalysis} className={`px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
-                                Quay lại Phân tích theo câu
+                                Quay lại Phân tích chi tiết
                             </button>
+                            <AdvancedCopyButton chapter={chapter} />
                        </div>
                    </div>
                )}
@@ -362,12 +476,13 @@ const ChapterNavigator: React.FC<{
     onPageSizeChange: (newSize: number) => void;
 }> = ({ totalChapters, onRangeChange, pageSize, currentRange, onPageSizeChange }) => {
     const { theme } = useSettings();
+    const [isExpanded, setIsExpanded] = useState(true);
     const [fromInput, setFromInput] = useState('1');
     const [toInput, setToInput] = useState(String(Math.min(pageSize, totalChapters)));
 
     useEffect(() => {
         setFromInput(String(currentRange.start + 1));
-        setToInput(String(currentRange.end + 1));
+        setToInput(String(currentRange.end));
     }, [currentRange]);
 
     const numPages = Math.ceil(totalChapters / pageSize);
@@ -375,8 +490,9 @@ const ChapterNavigator: React.FC<{
 
     const handlePageClick = (pageIndex: number) => {
         const start = pageIndex * pageSize;
-        const end = Math.min(start + pageSize - 1, totalChapters - 1);
-        onRangeChange({ start, end });
+        const end = Math.min(start + pageSize, totalChapters);
+        onRangeChange({ start, end: end });
+        setIsExpanded(false);
     };
 
     const handleCustomRangeSubmit = (e: React.FormEvent) => {
@@ -387,77 +503,88 @@ const ChapterNavigator: React.FC<{
             alert("Phạm vi chương không hợp lệ. Vui lòng kiểm tra lại số chương (từ 1 đến " + totalChapters + ").");
             return;
         }
-        onRangeChange({ start: from - 1, end: to - 1 });
+        onRangeChange({ start: from - 1, end: to });
+        setIsExpanded(false);
     };
 
     return (
-        <div className={`${theme.cardBg} p-4 rounded-xl shadow-lg border ${theme.border} space-y-4`}>
-            <div className="flex items-center gap-3">
-                 <label htmlFor="page-size-select" className={`text-sm font-semibold ${theme.text} whitespace-nowrap`}>Số chương mỗi trang:</label>
-                <select
-                    id="page-size-select"
-                    value={pageSize}
-                    onChange={(e) => onPageSizeChange(Number(e.target.value))}
-                    className={`p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
-                >
-                    <option value="10">10</option>
-                    <option value="25">25</option>
-                    <option value="50">50</option>
-                    <option value="100">100</option>
-                </select>
-            </div>
-            <div>
-                <p className={`text-sm font-semibold ${theme.text} mb-2`}>Chuyển nhanh đến trang chương:</p>
-                <div className="flex flex-wrap gap-2">
-                    {Array.from({ length: numPages }, (_, i) => {
-                        const startChap = i * pageSize + 1;
-                        const endChap = Math.min((i + 1) * pageSize, totalChapters);
-                        const isActive = i === currentPageIndex;
-                        return (
-                            <button
-                                key={i}
-                                onClick={() => handlePageClick(i)}
-                                className={`px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${
-                                    isActive
-                                        ? `${theme.primaryButton.bg} ${theme.primaryButton.text} shadow`
-                                        : `${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg}`
-                                }`}
-                            >
-                                {startChap}-{endChap}
-                            </button>
-                        );
-                    })}
+        <details
+            open={isExpanded}
+            onToggle={(e) => setIsExpanded(e.currentTarget.open)}
+            className={`${theme.cardBg} rounded-xl shadow-lg border ${theme.border} group`}
+        >
+            <summary className={`flex justify-between items-center p-4 cursor-pointer list-none ${theme.hoverBg} transition-colors`}>
+                <h3 className={`text-lg font-semibold ${theme.text}`}>Điều hướng chương</h3>
+                <ChevronDownIcon className={`w-5 h-5 ${theme.mutedText} transition-transform duration-200 group-open:rotate-180`} />
+            </summary>
+            <div className={`p-4 border-t ${theme.border} space-y-4`}>
+                <div className="flex items-center gap-3">
+                     <label htmlFor="page-size-select" className={`text-sm font-semibold ${theme.text} whitespace-nowrap`}>Số chương mỗi trang:</label>
+                    <select
+                        id="page-size-select"
+                        value={pageSize}
+                        onChange={(e) => onPageSizeChange(Number(e.target.value))}
+                        className={`p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                    >
+                        <option value="10">10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
                 </div>
-            </div>
-            <form onSubmit={handleCustomRangeSubmit} className="space-y-2">
-                <p className={`text-sm font-semibold ${theme.text}`}>Hoặc chọn phạm vi tùy chỉnh:</p>
-                <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex items-center gap-2">
-                         <label htmlFor="from-chap" className="text-sm font-medium">Từ chương:</label>
-                         <input
-                            id="from-chap"
-                            type="number"
-                            value={fromInput}
-                            onChange={(e) => setFromInput(e.target.value)}
-                            className={`w-20 p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
-                        />
+                <div>
+                    <p className={`text-sm font-semibold ${theme.text} mb-2`}>Chuyển nhanh đến trang chương:</p>
+                    <div className="flex flex-wrap gap-2">
+                        {Array.from({ length: numPages }, (_, i) => {
+                            const startChap = i * pageSize + 1;
+                            const endChap = Math.min((i + 1) * pageSize, totalChapters);
+                            const isActive = i === currentPageIndex;
+                            return (
+                                <button
+                                    key={i}
+                                    onClick={() => handlePageClick(i)}
+                                    className={`px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${
+                                        isActive
+                                            ? `${theme.primaryButton.bg} ${theme.primaryButton.text} shadow`
+                                            : `${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg}`
+                                    }`}
+                                >
+                                    {startChap}-{endChap}
+                                </button>
+                            );
+                        })}
                     </div>
-                    <div className="flex items-center gap-2">
-                        <label htmlFor="to-chap" className="text-sm font-medium">Đến chương:</label>
-                        <input
-                            id="to-chap"
-                            type="number"
-                            value={toInput}
-                            onChange={(e) => setToInput(e.target.value)}
-                            className={`w-20 p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
-                        />
-                    </div>
-                    <button type="submit" className={`px-4 py-2 ${theme.primaryButton.bg} ${theme.primaryButton.text} font-semibold rounded-lg shadow-sm ${theme.primaryButton.hoverBg} transition-colors`}>
-                        Hiển thị
-                    </button>
                 </div>
-            </form>
-        </div>
+                <form onSubmit={handleCustomRangeSubmit} className="space-y-2">
+                    <p className={`text-sm font-semibold ${theme.text}`}>Hoặc chọn phạm vi tùy chỉnh:</p>
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <div className="flex items-center gap-2">
+                             <label htmlFor="from-chap" className="text-sm font-medium">Từ chương:</label>
+                             <input
+                                id="from-chap"
+                                type="number"
+                                value={fromInput}
+                                onChange={(e) => setFromInput(e.target.value)}
+                                className={`w-20 p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                            />
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <label htmlFor="to-chap" className="text-sm font-medium">Đến chương:</label>
+                            <input
+                                id="to-chap"
+                                type="number"
+                                value={toInput}
+                                onChange={(e) => setToInput(e.target.value)}
+                                className={`w-20 p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                            />
+                        </div>
+                        <button type="submit" className={`px-4 py-2 ${theme.primaryButton.bg} ${theme.primaryButton.text} font-semibold rounded-lg shadow-sm ${theme.primaryButton.hoverBg} transition-colors`}>
+                            Hiển thị
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </details>
     );
 };
 
@@ -474,7 +601,7 @@ const FileDisplay: React.FC<{
     
     const handleRangeChange = useCallback((newRange: { start: number; end: number }) => {
         const start = Math.max(0, newRange.start);
-        const end = Math.min(fileData.chapters.length - 1, newRange.end);
+        const end = Math.min(fileData.chapters.length, newRange.end);
         onVisibleRangeUpdate({ start, end });
     }, [fileData.chapters.length, onVisibleRangeUpdate]);
 
@@ -485,18 +612,19 @@ const FileDisplay: React.FC<{
                     totalChapters={fileData.chapters.length}
                     onRangeChange={handleRangeChange}
                     pageSize={fileData.pageSize}
-                    currentRange={fileData.visibleRange}
+                    currentRange={{start: fileData.visibleRange.start, end: fileData.visibleRange.end -1}}
                     onPageSizeChange={onPageSizeUpdate}
                 />
             )}
 
             <div className="space-y-4">
-                {fileData.chapters.slice(fileData.visibleRange.start, fileData.visibleRange.end + 1).map((chapter, index) => {
+                {fileData.chapters.slice(fileData.visibleRange.start, fileData.visibleRange.end).map((chapter, index) => {
                     const originalChapterIndex = fileData.visibleRange.start + index;
                     return (
                         <ChapterDisplay
                             key={originalChapterIndex}
                             chapter={chapter}
+                            chapterIndex={originalChapterIndex}
                             onSentenceClick={(sentenceIndex) => onSentenceClick(originalChapterIndex, sentenceIndex)}
                             onTranslate={() => onChapterTranslate(originalChapterIndex)}
                             onBackToAnalysis={() => onBackToAnalysis(originalChapterIndex)}
@@ -537,17 +665,17 @@ const SettingsPanel: React.FC<{
     return (
         <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose}>
             <div
-                className={`fixed bottom-16 right-4 ${theme.cardBg} ${theme.border} border p-4 rounded-xl shadow-2xl w-64 space-y-4`}
+                className={`fixed bottom-16 right-4 ${theme.cardBg} ${theme.border} border p-4 rounded-xl shadow-2xl w-80 space-y-4`}
                 onClick={e => e.stopPropagation()}
             >
-                <div>
+                 <div>
                     <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Khóa API Gemini</h3>
                     <input
                         type="password"
-                        value={settings.apiKey}
-                        onChange={(e) => setSettings(s => ({ ...s, apiKey: e.target.value }))}
                         placeholder="Dán khóa API của bạn vào đây"
-                        className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                        value={settings.apiKey || ''}
+                        onChange={(e) => setSettings(s => ({ ...s, apiKey: e.target.value }))}
+                        className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text} font-mono text-xs`}
                     />
                 </div>
                 <div>
@@ -577,6 +705,9 @@ const SettingsPanel: React.FC<{
                         <SettingButton value='sepia' label='Ngà' settingKey='theme' currentValue={settings.theme} />
                     </div>
                 </div>
+                 <p className={`text-xs ${theme.mutedText} text-center`}>
+                    Khóa API của bạn được lưu trữ an toàn trên trình duyệt của bạn.
+                </p>
             </div>
         </div>
     );
@@ -638,41 +769,127 @@ const VocabularyModal: React.FC<{
     );
 };
 
+const CacheLibraryModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    analysisCache: Map<string, AnalyzedText>;
+    translationCache: Map<string, string>;
+    onDeleteAnalysis: (key: string) => void;
+    onDeleteTranslation: (key: string) => void;
+}> = ({ isOpen, onClose, analysisCache, translationCache, onDeleteAnalysis, onDeleteTranslation }) => {
+    const { theme } = useSettings();
+
+    if (!isOpen) return null;
+
+    const analysisEntries = Array.from(analysisCache.entries());
+    const translationEntries = Array.from(translationCache.entries());
+
+    const CacheItem: React.FC<{itemKey: string, content: string, onDelete: () => void}> = ({ itemKey, content, onDelete }) => (
+        <div className={`p-3 rounded-lg border ${theme.border} ${theme.mainBg} flex justify-between items-start`}>
+            <div className="flex-grow min-w-0">
+                <p className={`font-mono text-xs ${theme.mutedText} truncate`} title={itemKey}>{itemKey}</p>
+                <p className={`mt-1 ${theme.text} text-sm truncate`}>{content}</p>
+            </div>
+            <button
+                onClick={onDelete}
+                className={`ml-4 flex-shrink-0 p-1.5 rounded-full text-red-400 hover:bg-red-500/10 hover:text-red-600 transition-colors`}
+                title="Xóa khỏi cache"
+            >
+                <CloseIcon className="w-4 h-4" />
+            </button>
+        </div>
+    );
+
+    return (
+        <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={onClose}>
+            <div
+                className={`w-full max-w-4xl max-h-[80vh] flex flex-col ${theme.cardBg} rounded-xl shadow-2xl overflow-hidden`}
+                onClick={e => e.stopPropagation()}
+            >
+                <header className={`p-4 border-b ${theme.border} flex justify-between items-center`}>
+                    <h2 className={`text-xl font-bold ${theme.text}`}>Thư viện Cache</h2>
+                    <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
+                        <CloseIcon className="w-6 h-6" />
+                    </button>
+                </header>
+                <div className="p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <section>
+                        <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Phân tích câu ({analysisEntries.length})</h3>
+                        <div className="space-y-2">
+                             {analysisEntries.length === 0 ? (
+                                <p className={theme.mutedText}>Chưa có phân tích nào được lưu.</p>
+                            ) : (
+                                analysisEntries.map(([key, value]) => (
+                                    <CacheItem 
+                                        key={key} 
+                                        itemKey={key}
+                                        content={value.translation.map(s=>s.segment).join(' ')} 
+                                        onDelete={() => onDeleteAnalysis(key)} 
+                                    />
+                                ))
+                            )}
+                        </div>
+                    </section>
+                    <section>
+                         <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Bản dịch chương ({translationEntries.length})</h3>
+                         <div className="space-y-2">
+                             {translationEntries.length === 0 ? (
+                                <p className={theme.mutedText}>Chưa có bản dịch nào được lưu.</p>
+                            ) : (
+                                translationEntries.map(([key, value]) => (
+                                     <CacheItem 
+                                        key={key} 
+                                        itemKey={key}
+                                        content={value}
+                                        onDelete={() => onDeleteTranslation(key)} 
+                                    />
+                                ))
+                            )}
+                         </div>
+                    </section>
+                </div>
+                <footer className={`p-3 border-t ${theme.border} text-center`}>
+                     <p className={`text-xs ${theme.mutedText}`}>Hiển thị {analysisEntries.length + translationEntries.length} mục đã cache.</p>
+                </footer>
+            </div>
+        </div>
+    );
+};
+
 // --- Main App Component ---
 
 const App = () => {
     const [settings, setSettings] = useState<AppSettings>({
+        apiKey: '',
         fontSize: 16,
         fontFamily: 'font-sans',
         theme: 'light',
-        apiKey: '',
     });
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
+    const [isCacheLibraryOpen, setIsCacheLibraryOpen] = useState(false);
     
     const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
     const [activeFileId, setActiveFileId] = useState<number | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<ApiError | null>(null);
     const [analysisCache, setAnalysisCache] = useState<Map<string, AnalyzedText>>(new Map());
+    const [translationCache, setTranslationCache] = useState<Map<string, string>>(new Map());
     const [vocabulary, setVocabulary] = useState<TokenData[]>([]);
     
     useEffect(() => {
         try {
             const storedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            if (storedSettings) {
-                const parsed = JSON.parse(storedSettings);
-                setSettings(s => ({...s, ...parsed}));
-            }
-            const storedCache = localStorage.getItem(CACHE_STORAGE_KEY);
-            if (storedCache) {
-                 const parsedCache = JSON.parse(storedCache);
-                 setAnalysisCache(new Map(parsedCache));
-            }
+            if (storedSettings) setSettings(s => ({...s, ...JSON.parse(storedSettings)}));
+            
+            const storedAnalysisCache = localStorage.getItem(ANALYSIS_CACHE_STORAGE_KEY);
+            if (storedAnalysisCache) setAnalysisCache(new Map(JSON.parse(storedAnalysisCache)));
+            
+            const storedTranslationCache = localStorage.getItem(TRANSLATION_CACHE_STORAGE_KEY);
+            if (storedTranslationCache) setTranslationCache(new Map(JSON.parse(storedTranslationCache)));
+            
             const storedVocabulary = localStorage.getItem(VOCABULARY_STORAGE_KEY);
-            if (storedVocabulary) {
-                setVocabulary(JSON.parse(storedVocabulary));
-            }
+            if (storedVocabulary) setVocabulary(JSON.parse(storedVocabulary));
         } catch (e) {
             console.error("Failed to load data from localStorage", e);
         }
@@ -681,13 +898,27 @@ const App = () => {
     useEffect(() => {
         try {
             localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-            const serializedCache = JSON.stringify(Array.from(analysisCache.entries()));
-            localStorage.setItem(CACHE_STORAGE_KEY, serializedCache);
+        } catch (e) { console.error("Failed to save settings", e); }
+    }, [settings]);
+    
+    useEffect(() => {
+        try {
+            localStorage.setItem(ANALYSIS_CACHE_STORAGE_KEY, JSON.stringify(Array.from(analysisCache.entries())));
+        } catch (e) { console.error("Failed to save analysis cache", e); }
+    }, [analysisCache]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries())));
+        } catch (e) { console.error("Failed to save translation cache", e); }
+    }, [translationCache]);
+
+    useEffect(() => {
+        try {
             localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary));
-        } catch (e) {
-            console.error("Failed to save data to localStorage", e);
-        }
-    }, [settings, analysisCache, vocabulary]);
+        } catch (e) { console.error("Failed to save vocabulary", e); }
+    }, [vocabulary]);
+
 
     const handleProcessText = useCallback((text: string, fileName: string) => {
         if (!text.trim()) {
@@ -709,7 +940,7 @@ const App = () => {
                     id: Date.now(),
                     fileName,
                     chapters,
-                    visibleRange: { start: 0, end: Math.min(PAGE_SIZE - 1, chapters.length - 1) },
+                    visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
                     pageSize: PAGE_SIZE,
                 };
                 
@@ -739,9 +970,26 @@ const App = () => {
         setVocabulary(prevVocab => prevVocab.filter(token => token.character !== tokenCharacter));
     }, []);
 
+    const handleChapterUpdate = useCallback((chapterIndex: number, newState: Partial<ChapterData>) => {
+        setProcessedFiles(prevFiles => prevFiles.map(file => {
+            if (file.id === activeFileId) {
+                const newChapters = [...file.chapters];
+                newChapters[chapterIndex] = { ...newChapters[chapterIndex], ...newState };
+                return { ...file, chapters: newChapters };
+            }
+            return file;
+        }));
+    }, [activeFileId]);
+
     const handleSentenceClick = useCallback(async (chapterIndex: number, sentenceIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
         if (!file) return;
+
+        if (!settings.apiKey) {
+            setError({ message: "Vui lòng nhập khóa API Gemini trong Cài đặt (biểu tượng bánh răng) trước khi phân tích." });
+            setIsSettingsOpen(true);
+            return;
+        }
 
         const sentence = file.chapters[chapterIndex].sentences[sentenceIndex];
 
@@ -762,10 +1010,11 @@ const App = () => {
             updateSentence({ isExpanded: !sentence.isExpanded });
             return;
         }
-
-        if (analysisCache.has(sentence.original)) {
-            const cachedResult = analysisCache.get(sentence.original)!;
-            updateSentence({ analysisState: 'done', analysisResult: cachedResult, isExpanded: true });
+        
+        const analysisCacheKey = sentence.original;
+        if (analysisCache.has(analysisCacheKey)) {
+            const cachedResult = analysisCache.get(analysisCacheKey)!;
+            updateSentence({ analysisState: 'done', analysisResult: cachedResult, isExpanded: !sentence.isTitle });
             return;
         }
 
@@ -773,55 +1022,57 @@ const App = () => {
 
         try {
             const result = await analyzeSentence(sentence.original, settings.apiKey);
-            setAnalysisCache(prevCache => new Map(prevCache).set(sentence.original, result));
-            updateSentence({ analysisState: 'done', analysisResult: result, isExpanded: true });
+            setAnalysisCache(prevCache => new Map(prevCache).set(analysisCacheKey, result));
+            updateSentence({ analysisState: 'done', analysisResult: result, isExpanded: !sentence.isTitle });
         } catch (err: any) {
             updateSentence({ analysisState: 'error', error: err.message });
         }
     }, [activeFileId, processedFiles, analysisCache, settings.apiKey]);
-
-    const handleChapterUpdate = useCallback((chapterIndex: number, newState: Partial<ChapterData>) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id === activeFileId) {
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = { ...newChapters[chapterIndex], ...newState };
-                return { ...file, chapters: newChapters };
-            }
-            return file;
-        }));
-    }, [activeFileId]);
     
     const handleTranslateChapter = useCallback(async (chapterIndex: number) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id !== activeFileId) return file;
-            const newChapters = [...file.chapters];
-            newChapters[chapterIndex] = { ...newChapters[chapterIndex], translationState: 'loading' };
-            return { ...file, chapters: newChapters };
-        }));
+        const file = processedFiles.find(f => f.id === activeFileId);
+        if (!file) return;
+        
+        if (!settings.apiKey) {
+            setError({ message: "Vui lòng nhập khóa API Gemini trong Cài đặt (biểu tượng bánh răng) trước khi dịch." });
+            setIsSettingsOpen(true);
+            handleChapterUpdate(chapterIndex, { translationState: 'pending' });
+            return;
+        }
+
+        const chapter = file.chapters[chapterIndex];
+        const translationCacheKey = `${file.id}-${chapter.title}`;
+        
+        handleChapterUpdate(chapterIndex, { translationState: 'loading' });
+
+        // Trigger background analysis for all sentences
+        chapter.sentences.forEach((s, sIndex) => {
+            if (s.analysisState === 'pending') {
+                // Don't await, let them run in the background
+                handleSentenceClick(chapterIndex, sIndex);
+            }
+        });
 
         try {
-            const file = processedFiles.find(f => f.id === activeFileId);
-            if (!file) throw new Error("File not found");
-            const chapterContent = file.chapters[chapterIndex].sentences.map(s => s.original).join('\\n');
+            let translationResult: string;
+            if (translationCache.has(translationCacheKey)) {
+                translationResult = translationCache.get(translationCacheKey)!;
+            } else {
+                const chapterContent = chapter.sentences.filter(s => !s.isTitle).map(s => s.original).join('\n');
+                translationResult = await translateChapter(chapterContent, settings.apiKey);
+                setTranslationCache(prev => new Map(prev).set(translationCacheKey, translationResult));
+            }
             
-            const result = await translateChapter(chapterContent, settings.apiKey);
+            handleChapterUpdate(chapterIndex, {
+                translationState: 'done',
+                translationResult: translationResult,
+            });
 
-            setProcessedFiles(prevFiles => prevFiles.map(file => {
-                if (file.id !== activeFileId) return file;
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = { ...newChapters[chapterIndex], translationState: 'done', translationResult: result };
-                return { ...file, chapters: newChapters };
-            }));
-
-        } catch (err: any) {
-            setProcessedFiles(prevFiles => prevFiles.map(file => {
-                if (file.id !== activeFileId) return file;
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = { ...newChapters[chapterIndex], translationState: 'error', translationError: err.message };
-                return { ...file, chapters: newChapters };
-            }));
+        } catch (err: any)
+        {
+            handleChapterUpdate(chapterIndex, { translationState: 'error', translationError: err.message });
         }
-    }, [activeFileId, processedFiles, settings.apiKey]);
+    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentenceClick, translationCache, settings.apiKey]);
 
     const handleBackToSentenceAnalysis = useCallback((chapterIndex: number) => {
         setProcessedFiles(prevFiles => prevFiles.map(file => {
@@ -849,7 +1100,7 @@ const App = () => {
     const handlePageSizeUpdate = useCallback((newSize: number) => {
         setProcessedFiles(prevFiles => prevFiles.map(file => {
             if (file.id === activeFileId) {
-                const newEnd = Math.min(newSize - 1, file.chapters.length - 1);
+                const newEnd = Math.min(newSize, file.chapters.length);
                 return { 
                     ...file, 
                     pageSize: newSize,
@@ -880,6 +1131,22 @@ const App = () => {
         setError(null);
     }, []);
 
+    const handleDeleteAnalysisCacheItem = useCallback((key: string) => {
+        setAnalysisCache(prev => {
+            const newCache = new Map(prev);
+            newCache.delete(key);
+            return newCache;
+        });
+    }, []);
+
+    const handleDeleteTranslationCacheItem = useCallback((key: string) => {
+        setTranslationCache(prev => {
+            const newCache = new Map(prev);
+            newCache.delete(key);
+            return newCache;
+        });
+    }, []);
+
     const activeFile = processedFiles.find(f => f.id === activeFileId);
     const themeClasses = getThemeClasses(settings.theme);
 
@@ -890,6 +1157,14 @@ const App = () => {
                 style={{ fontSize: `${settings.fontSize}px`}}
             >
                 <VocabularyModal isOpen={isVocabularyOpen} onClose={() => setIsVocabularyOpen(false)} vocabulary={vocabulary} onDelete={handleDeleteVocabularyItem} />
+                <CacheLibraryModal 
+                    isOpen={isCacheLibraryOpen} 
+                    onClose={() => setIsCacheLibraryOpen(false)} 
+                    analysisCache={analysisCache}
+                    translationCache={translationCache}
+                    onDeleteAnalysis={handleDeleteAnalysisCacheItem}
+                    onDeleteTranslation={handleDeleteTranslationCacheItem}
+                />
                 <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
                 <header className={`${themeClasses.cardBg}/80 backdrop-blur-lg border-b ${themeClasses.border} sticky top-0 z-20`}>
@@ -900,6 +1175,9 @@ const App = () => {
                          <div className="flex items-center gap-4">
                               <button onClick={() => setIsVocabularyOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở từ điển">
                                 <BookOpenIcon className="w-6 h-6" />
+                            </button>
+                             <button onClick={() => setIsCacheLibraryOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở thư viện cache">
+                                <ArchiveBoxIcon className="w-6 h-6" />
                             </button>
                              <a href="https://github.com/google/genai-js" target="_blank" rel="noopener noreferrer" className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`}>
                                 <GithubIcon className="w-6 h-6" />
@@ -919,8 +1197,15 @@ const App = () => {
                          />
                          {error && (
                             <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow" role="alert">
-                                <p className="font-bold">Lỗi</p>
-                                <p>{error.message}</p>
+                                <div className="flex justify-between items-center">
+                                   <div>
+                                        <p className="font-bold">Lỗi</p>
+                                        <p>{error.message}</p>
+                                   </div>
+                                   <button onClick={() => setError(null)} className="p-1 rounded-full hover:bg-red-200">
+                                        <CloseIcon className="w-5 h-5"/>
+                                   </button>
+                                </div>
                             </div>
                         )}
 

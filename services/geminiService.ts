@@ -1,12 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import type { AnalyzedText, GrammarRole } from './types';
-
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable is not set.");
-}
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+import type { AnalyzedText } from '../types';
 
 const analysisSystemInstruction = `You are an expert linguist and translator specializing in Chinese and Vietnamese. Your task is to perform a detailed grammatical analysis and translation of a single Chinese sentence.
 
@@ -95,7 +89,12 @@ const translationSystemInstruction = `You are an expert translator specializing 
 6.  **Output:** Return ONLY the translated Vietnamese text, with no extra explanations, titles, or formatting.
 `;
 
-export const analyzeSentence = async (sentence: string): Promise<AnalyzedText> => {
+export const analyzeSentence = async (sentence: string, apiKey: string): Promise<AnalyzedText> => {
+    if (!apiKey) {
+        throw new Error("Vui lòng cung cấp khóa API trong phần Cài đặt.");
+    }
+    const ai = new GoogleGenAI({ apiKey });
+
     try {
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
@@ -130,7 +129,12 @@ export const analyzeSentence = async (sentence: string): Promise<AnalyzedText> =
     }
 };
 
-export const translateChapter = async (chapterContent: string): Promise<string> => {
+export const translateChapter = async (chapterContent: string, apiKey: string): Promise<string> => {
+    if (!apiKey) {
+        throw new Error("Vui lòng cung cấp khóa API trong phần Cài đặt.");
+    }
+    const ai = new GoogleGenAI({ apiKey });
+    
     try {
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",

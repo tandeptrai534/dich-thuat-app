@@ -2,6 +2,16 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import type { AnalyzedText } from './types';
 
+// Initialize the GoogleGenAI client once using the API key from environment variables.
+// This is a security best practice and improves performance.
+const apiKey = process.env.API_KEY;
+if (!apiKey) {
+    // This provides a clear error message to the developer if the API key is missing.
+    throw new Error("API_KEY environment variable not set. Please ensure it is configured in your deployment environment.");
+}
+const ai = new GoogleGenAI({ apiKey });
+
+
 const analysisSystemInstruction = `You are an expert linguist and translator specializing in Chinese and Vietnamese. Your task is to perform a detailed grammatical analysis and translation of a single Chinese sentence.
 
 **RESPONSE FORMAT:**
@@ -89,13 +99,8 @@ const translationSystemInstruction = `You are an expert translator specializing 
 6.  **Output:** Return ONLY the translated Vietnamese text, with no extra explanations, titles, or formatting.
 `;
 
-export const analyzeSentence = async (sentence: string, apiKey: string): Promise<AnalyzedText> => {
+export const analyzeSentence = async (sentence: string): Promise<AnalyzedText> => {
     try {
-        if (!apiKey) {
-            throw new Error("Lỗi: Khóa API chưa được thiết lập. Vui lòng vào Cài đặt để nhập khóa API của bạn.");
-        }
-        const ai = new GoogleGenAI({ apiKey });
-
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: `Please analyze and translate this sentence: "${sentence}"`,
@@ -129,13 +134,8 @@ export const analyzeSentence = async (sentence: string, apiKey: string): Promise
     }
 };
 
-export const translateChapter = async (chapterContent: string, apiKey: string): Promise<string> => {
+export const translateChapter = async (chapterContent: string): Promise<string> => {
     try {
-        if (!apiKey) {
-            throw new Error("Lỗi: Khóa API chưa được thiết lập. Vui lòng vào Cài đặt để nhập khóa API của bạn.");
-        }
-        const ai = new GoogleGenAI({ apiKey });
-
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: chapterContent,

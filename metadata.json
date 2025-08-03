@@ -1,6 +1,6 @@
-
 {
   "name": "Trình Phân Tích Tiếng Trung",
   "description": "Một ứng dụng web để dịch và phân tích ngữ pháp tiếng Trung sang tiếng Việt, hiển thị phiên âm Pinyin, âm Hán Việt và tô màu các thành phần ngữ pháp.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "prompt": ""
 }
