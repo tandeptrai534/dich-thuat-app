@@ -1,10 +1,9 @@
 
+
 import React from 'react';
-import type { AnalyzedText, TokenData } from '../types';
+import type { AnalyzedText } from '../types';
 import { Token } from './Token';
 import { CopyIcon } from './common/icons';
-import { GRAMMAR_COLOR_MAP } from '../constants';
-import { GrammarRole } from '../types';
 import { useSettings } from '../App';
 
 
@@ -29,53 +28,45 @@ const CopyButton: React.FC<{ textToCopy: string; className?: string; children: R
 
 interface OutputDisplayProps {
     data: AnalyzedText;
-    onSaveToken: (token: TokenData) => void;
 }
 
-export const OutputDisplay: React.FC<OutputDisplayProps> = ({ data, onSaveToken }) => {
-    const { settings, theme } = useSettings();
+export const OutputDisplay: React.FC<OutputDisplayProps> = ({ data }) => {
+    const { theme } = useSettings();
     
     if (!data || !data.tokens) return null;
 
     const originalSentence = data.tokens.map(t => t.character).join('');
-    const translationText = data.translation.map(s => s.segment).join('');
+    const sentenceStructureText = data.sentenceGrammarExplanation || '';
 
     const getFullAnalysisText = () => {
-        let text = `Câu gốc: ${originalSentence}\n`;
-        text += `Bản dịch: ${translationText}\n\n`;
-        text += `Phân tích chi tiết:\n`;
+        let text = `Câu gốc: ${originalSentence}\n\n`;
+        text += `Phân tích cấu trúc câu:\n${sentenceStructureText}\n\n`;
+        text += `Phân tích chi tiết từng từ:\n`;
         data.tokens.forEach(t => {
-            text += `- ${t.character} (${t.pinyin} / ${t.sinoVietnamese}): ${t.grammarRole}. Nghĩa: ${t.vietnameseMeaning}\n`;
+            text += `- ${t.character} (${t.pinyin} / ${t.sinoVietnamese}): ${t.grammarRole}. Nghĩa: ${t.vietnameseMeaning}. Giải thích: ${t.grammarExplanation}\n`;
         });
         return text;
     };
 
     return (
         <div className="flex flex-col gap-4 p-3">
-            <div className="flex justify-between items-center">
-                <h3 className={`text-md font-bold ${theme.text}`}>Bản dịch:</h3>
-                 <CopyButton textToCopy={translationText} className={`${theme.mutedText} ${theme.hoverBg}`}>
-                    <CopyIcon className="w-4 h-4" />
-                </CopyButton>
+            <div className="relative">
+                <div className="flex justify-between items-center mb-2">
+                    <h3 className={`text-md font-bold ${theme.text}`}>Phân tích cấu trúc câu</h3>
+                    <CopyButton textToCopy={sentenceStructureText} className={`${theme.mutedText} ${theme.hoverBg}`}>
+                        <CopyIcon className="w-4 h-4" />
+                    </CopyButton>
+                </div>
+                <p className={`text-md ${theme.text} leading-relaxed p-3 rounded-md ${theme.mainBg}`}>
+                    {sentenceStructureText}
+                </p>
             </div>
-            <p className={`text-md ${theme.text} leading-relaxed`}>
-                {data.translation.map((segment, index) => {
-                    const color = GRAMMAR_COLOR_MAP[segment.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
-                    const tokenTextColor = settings.theme === 'dark' ? `text-${color.bg.split('-')[1]}-300` : color.text;
-                    const tokenBgColor = settings.theme === 'dark' ? `${color.bg.replace('100', '900')}/50` : color.bg;
-                    return (
-                        <span key={index} className={`px-1 py-0.5 rounded ${tokenBgColor} ${tokenTextColor}`}>
-                            {segment.segment}
-                        </span>
-                    )
-                })}
-            </p>
             
             <div>
-                 <h3 className={`text-md font-bold ${theme.text} mb-2`}>Phân tích ngữ pháp:</h3>
+                 <h3 className={`text-md font-bold ${theme.text} mb-2`}>Phân tích chi tiết từng từ:</h3>
                 <div className={`flex flex-wrap gap-x-2 gap-y-4 ${theme.mainBg} p-3 rounded-md`}>
                     {data.tokens.map((token, tIndex) => (
-                        <Token key={`${tIndex}`} token={token} onSave={onSaveToken} />
+                        <Token key={`${tIndex}`} token={token} />
                     ))}
                 </div>
             </div>

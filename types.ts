@@ -1,46 +1,64 @@
 
+
+
+
 export interface ApiError {
     message: string;
 }
 
 export type AnalysisState = 'pending' | 'loading' | 'done' | 'error';
+export type DisplayMode = 'detailed-word' | 'grammar' | 'translation' | 'original';
 
 export interface TranslationSegment {
     segment: string;
     grammarRole: GrammarRole;
 }
 
+export interface SpecialTerm {
+    term: string;
+    sinoVietnamese: string;
+    vietnameseTranslation: string;
+    category: ProperNounCategory;
+    explanation: string;
+}
+
 export interface AnalyzedText {
     tokens: TokenData[];
-    translation: TranslationSegment[];
+    translation: string;
+    specialTerms: SpecialTerm[];
+    sentenceGrammarExplanation: string;
 }
 
 export interface SentenceData {
     original: string;
+    sentenceNumber?: number;
     
-    // For detailed, on-demand grammatical analysis
     analysisState: AnalysisState;
     analysisResult?: AnalyzedText;
     analysisError?: string;
     
-    // For simple, batch translation
     translationState: AnalysisState;
     translation?: string;
     translationError?: string;
     
-    isExpanded: boolean;
+    displayMode?: DisplayMode;
     isTitle?: boolean;
 }
 
 export interface ChapterData {
     title: string;
-    chapterNumber?: string; // Stores the detected chapter number from the original text
+    chapterNumber?: string;
     sentences: SentenceData[];
     isExpanded: boolean;
+    partNumber?: number;
+    totalParts?: number;
 
-    // For batch translation process
     isBatchTranslating?: boolean;
-    batchTranslationProgress?: number; // A value between 0 and 1
+    batchTranslationProgress?: number;
+
+    isBatchAnalyzing?: boolean;
+
+    batchAnalysisProgress?: number; 
 }
 
 export interface ProcessedFile {
@@ -52,7 +70,6 @@ export interface ProcessedFile {
         end: number;
     };
     pageSize: number;
-    vocabProcessingChunkIndex: number;
 }
 
 // --- App Settings ---
@@ -63,6 +80,7 @@ export type FontFamily = 'font-sans' | 'font-serif' | 'font-mono';
 export interface AppSettings {
     apiKey: string;
     fontSize: FontSize;
+    hanziFontSize: FontSize;
     fontFamily: FontFamily;
     theme: Theme;
     lineHeight: number;
@@ -93,34 +111,21 @@ export interface TokenData {
 }
 
 // --- Vocabulary Types ---
-export type VocabularyItemAnalysisState = 'pending' | 'loading' | 'done' | 'error';
+export type ProperNounCategory = 'Tên người' | 'Địa danh' | 'Công pháp' | 'Chiêu thức' | 'Vật phẩm' | 'Tổ chức' | 'Thành ngữ' | 'Tục ngữ' | 'Tiêu đề chương' | 'Khác';
 
-export type ProperNounCategory = 'Tên người' | 'Địa danh' | 'Công pháp' | 'Chiêu thức' | 'Vật phẩm' | 'Tổ chức' | 'Thành ngữ' | 'Tục ngữ' | 'Ngữ pháp' | 'Khác';
-
-export interface ProperNounAnalysisAPIResult {
-    term: string;
-    hanViet: string;
-    category: ProperNounCategory;
-    explanation: string;
+export interface VocabularyLocation {
+    chapterIndex: number;
+    chapterTitle: string;
+    sentenceNumber: number;
+    originalSentence: string;
 }
 
 export interface VocabularyItem { 
-    term: string; // The Chinese term
-    contextSentence?: string; // Longest sentence containing the term for context
-    
-    // For proper noun analysis
-    analysisState: VocabularyItemAnalysisState;
-    hanViet?: string;
-    category?: ProperNounCategory;
-    explanation?: string;
-    analysisError?: string;
-    
-    // Enriched data from sentence analysis
-    grammarRole?: GrammarRole;
-    grammarExplanation?: string;
-    vietnameseMeaning?: string;
+    term: string; 
+    sinoVietnamese: string; 
+    vietnameseTranslation: string;
+    category: ProperNounCategory;
+    explanation: string;
+    firstLocation: VocabularyLocation; 
+    isForceSino: boolean; 
 }
-
-
-// Kept for compatibility with unused components if any remain
-export type AnalysisScope = 'CHUNK' | 'CHAPTER' | 'FULL_TEXT';
