@@ -1,9 +1,9 @@
 
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
-import { analyzeSentence, translateChapter } from './services/geminiService';
-import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, AnalyzedText, TokenData } from './types';
+import { analyzeSentence, translateSentencesInBatch, analyzeProperNounsInBatch } from './services/geminiService';
+import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, ProperNounAnalysisAPIResult } from './types';
 import { InputArea } from './components/InputArea';
-import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon } from './components/common/icons';
+import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { OutputDisplay } from './components/OutputDisplay';
@@ -15,10 +15,13 @@ import { GrammarRole } from './types';
 const DEFAULT_CHAPTER_TITLE = 'Văn bản chính';
 const MAX_CHAPTER_LENGTH = 5000;
 const PAGE_SIZE = 10;
+const TRANSLATION_BATCH_SIZE = 10;
+const VOCABULARY_ANALYSIS_BATCH_SIZE = 20;
+const VOCAB_CHAPTER_CHUNK_SIZE = 1000;
 const SETTINGS_STORAGE_KEY = 'chinese_analyzer_settings';
 const ANALYSIS_CACHE_STORAGE_KEY = 'chinese_analyzer_analysis_cache';
 const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
-const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary';
+const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v2'; // new key for new structure
 
 // --- Theme & Settings ---
 const getThemeClasses = (theme: Theme) => {
@@ -68,6 +71,7 @@ function splitLargeChapter(title: string, content: string): Pick<ChapterData, 't
     }).map(s => ({
         original: s,
         analysisState: 'pending' as const,
+        translationState: 'pending' as const,
         isExpanded: false
     }));
 
@@ -120,22 +124,24 @@ function splitLargeChapter(title: string, content: string): Pick<ChapterData, 't
 
 function processTextIntoChapters(text: string): ChapterData[] {
     const chapters: ChapterData[] = [];
+    // This regex correctly captures the chapter number in the first group.
     const CHAPTER_REGEX = /^(?:Chương|Hồi|Quyển|Chapter|卷|第)\s*(\d+|[一二三四五六七八九十百千]+)\s*(?:(?:章|回|节|話|篇|卷之)\s*.*|[:：]\s*.*|$)/gm;
     const chapterMatches = [...text.matchAll(CHAPTER_REGEX)];
 
-    const createChapterData = (title: string, content: string): void => {
+    const createChapterData = (title: string, content: string, chapterNumber?: string): void => {
         splitLargeChapter(title, content).forEach(chunk => {
             const titleSentence: SentenceData = {
                 original: chunk.title,
                 analysisState: 'pending',
+                translationState: 'pending',
                 isExpanded: false,
                 isTitle: true,
             };
 
             chapters.push({
                 title: chunk.title,
+                chapterNumber, // Add the chapter number here.
                 sentences: [titleSentence, ...chunk.sentences],
-                translationState: 'pending',
                 isExpanded: false,
             });
         });
@@ -150,17 +156,18 @@ function processTextIntoChapters(text: string): ChapterData[] {
 
     const textBeforeFirstChapter = text.substring(0, chapterMatches[0].index).trim();
     if (textBeforeFirstChapter) {
-        createChapterData('Phần mở đầu', textBeforeFirstChapter);
+        createChapterData('Phần mở đầu', textBeforeFirstChapter); // Preamble has no number
     }
 
     chapterMatches.forEach((match, i) => {
         const chapterTitle = match[0].trim().replace(/\s+/g, ' ');
+        const chapterNumber = match[1]; // Extract the number
         const contentStartIndex = match.index! + match[0].length;
         const nextChapterIndex = (i + 1 < chapterMatches.length) ? chapterMatches[i + 1].index : text.length;
         const chapterContent = text.substring(contentStartIndex, nextChapterIndex).trim();
 
         if (chapterContent) {
-            createChapterData(chapterTitle, chapterContent);
+            createChapterData(chapterTitle, chapterContent, chapterNumber); // Pass the number
         }
     });
 
@@ -175,32 +182,35 @@ const AdvancedCopyButton: React.FC<{ chapter: ChapterData }> = ({ chapter }) => 
     const [isOptionsOpen, setIsOptionsOpen] = useState(false);
     const [copyOptions, setCopyOptions] = useState({
         original: true,
-        pinyin: true,
-        sinoVietnamese: true,
+        pinyin: false,
+        sinoVietnamese: false,
         translation: true,
     });
     const [justCopied, setJustCopied] = useState(false);
 
     const handleCopy = () => {
         let fullText = '';
-        const analyzedSentences = chapter.sentences.filter(s => s.analysisState === 'done' && s.analysisResult);
-        
-        if (copyOptions.original) {
-            fullText += '--- VĂN BẢN GỐC ---\n';
-            fullText += chapter.sentences.map(s => s.original).join('\n') + '\n\n';
-        }
-        if (copyOptions.pinyin) {
-            fullText += '--- PINYIN ---\n';
-            fullText += analyzedSentences.map(s => s.analysisResult!.tokens.map(t => t.pinyin).join(' ')).join('\n') + '\n\n';
-        }
-        if (copyOptions.sinoVietnamese) {
-            fullText += '--- HÁN VIỆT ---\n';
-            fullText += analyzedSentences.map(s => s.analysisResult!.tokens.map(t => t.sinoVietnamese).join(' ')).join('\n') + '\n\n';
-        }
-        if (copyOptions.translation && chapter.translationResult) {
-            fullText += '--- BẢN DỊCH ---\n';
-            fullText += chapter.translationResult + '\n';
-        }
+        chapter.sentences.forEach(s => {
+            if (s.isTitle) {
+                fullText += `\n--- ${s.original} ---\n\n`;
+                return;
+            }
+            if (copyOptions.original) {
+                fullText += s.original + '\n';
+            }
+            if (copyOptions.translation && s.translation) {
+                fullText += s.translation + '\n';
+            }
+             if ((copyOptions.pinyin || copyOptions.sinoVietnamese) && s.analysisResult) {
+                if(copyOptions.pinyin) {
+                    fullText += `Pinyin: ${s.analysisResult.tokens.map(t => t.pinyin).join(' ')}\n`;
+                }
+                if(copyOptions.sinoVietnamese) {
+                     fullText += `Hán Việt: ${s.analysisResult.tokens.map(t => t.sinoVietnamese).join(' ')}\n`;
+                }
+            }
+            fullText += '\n';
+        });
         
         navigator.clipboard.writeText(fullText.trim());
         setJustCopied(true);
@@ -228,7 +238,7 @@ const AdvancedCopyButton: React.FC<{ chapter: ChapterData }> = ({ chapter }) => 
                 className={`flex items-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}
             >
                 <CopyIcon className="w-4 h-4" />
-                <span>{justCopied ? 'Đã sao chép!' : 'Sao chép Nâng cao'}</span>
+                <span>{justCopied ? 'Đã sao chép!' : 'Sao chép'}</span>
             </button>
             {isOptionsOpen && (
                 <div 
@@ -237,9 +247,9 @@ const AdvancedCopyButton: React.FC<{ chapter: ChapterData }> = ({ chapter }) => 
                     <p className={`text-sm font-semibold p-2 ${theme.mutedText}`}>Tùy chọn sao chép:</p>
                     <div className="flex flex-col">
                         <CheckboxOption id="original" label="Văn bản gốc" />
-                        <CheckboxOption id="pinyin" label="Pinyin" />
-                        <CheckboxOption id="sinoVietnamese" label="Hán Việt" />
                         <CheckboxOption id="translation" label="Bản dịch" />
+                        <CheckboxOption id="pinyin" label="Pinyin (nếu đã phân tích)" />
+                        <CheckboxOption id="sinoVietnamese" label="Hán Việt (nếu đã phân tích)" />
                     </div>
                     <div className="p-2 mt-1">
                         <button
@@ -262,6 +272,24 @@ const SentenceDisplay: React.FC<{
 }> = ({ sentence, onClick, onSaveToken }) => {
     const { settings, theme } = useSettings();
 
+    const TranslationLine: React.FC = () => {
+        if (sentence.translationState === 'loading') {
+            return (
+                <div className="flex items-center gap-2 text-sm mt-2 px-3">
+                    <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
+                    <span className={theme.mutedText}>Đang dịch...</span>
+                </div>
+            );
+        }
+        if (sentence.translationState === 'done' && sentence.translation) {
+            return <p className={`mt-2 p-3 rounded-md ${theme.mainBg} italic text-slate-500 dark:text-slate-400`}>{sentence.translation}</p>;
+        }
+        if (sentence.translationState === 'error' && sentence.translationError) {
+             return <p className="mt-2 text-sm text-red-500 dark:text-red-400 px-3">Lỗi dịch: {sentence.translationError}</p>;
+        }
+        return null;
+    };
+
     const renderContent = () => {
         const titleSpecificClass = sentence.isTitle ? `text-center border-b-2 ${theme.border} pb-3 mb-3` : '';
 
@@ -272,22 +300,26 @@ const SentenceDisplay: React.FC<{
                         {sentence.isTitle ? (
                              <h4 className={`text-xl font-bold ${theme.text}`}>{sentence.original}</h4>
                         ) : (
-                            <p>{sentence.original}</p>
+                            <>
+                                <p>{sentence.original}</p>
+                                <TranslationLine />
+                            </>
                         )}
                     </div>
                 );
             case 'loading':
                  return (
-                    <div className={`flex items-center justify-center gap-2 p-3 ${titleSpecificClass}`}>
+                    <div className={`flex flex-col items-center justify-center gap-2 p-3 ${titleSpecificClass}`}>
                         <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
                         <span className={theme.mutedText}>Đang phân tích...</span>
                     </div>
                 );
             case 'error':
                  return (
-                    <div className={`p-3 bg-red-50 text-red-700 rounded-lg cursor-pointer ${titleSpecificClass}`}>
-                        <p><strong>Lỗi:</strong> {sentence.error}</p>
+                    <div className={`p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-lg cursor-pointer ${titleSpecificClass}`}>
+                        <p><strong>Lỗi phân tích:</strong> {sentence.analysisError}</p>
                         <p className="font-semibold">Nhấp để thử lại.</p>
+                        <TranslationLine />
                     </div>
                 );
             case 'done':
@@ -296,6 +328,7 @@ const SentenceDisplay: React.FC<{
                      return (
                          <div className={titleSpecificClass}>
                              <OutputDisplay data={sentence.analysisResult} onSaveToken={onSaveToken} />
+                             <TranslationLine />
                          </div>
                      );
                  }
@@ -303,7 +336,7 @@ const SentenceDisplay: React.FC<{
                  return (
                      <div className={`p-3 space-y-3 cursor-pointer ${titleSpecificClass}`}>
                          {sentence.isTitle && <h4 className={`text-xl font-bold ${theme.text} mb-2`}>{sentence.original}</h4>}
-                         <div className="flex flex-wrap items-end gap-x-2 gap-y-3 leading-tight">
+                         <div className="flex flex-wrap items-end justify-center gap-x-2 gap-y-3 leading-tight">
                             {sentence.analysisResult.tokens.map((token, index) => {
                                  const color = GRAMMAR_COLOR_MAP[token.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
                                  const tokenTextColor = settings.theme === 'dark' ? `text-${color.bg.split('-')[1]}-300` : color.text;
@@ -317,7 +350,7 @@ const SentenceDisplay: React.FC<{
                                 );
                             })}
                         </div>
-                        <p className="leading-relaxed">
+                        <p className="leading-relaxed text-center">
                             {sentence.analysisResult.translation.map((segment, index) => {
                                 const color = GRAMMAR_COLOR_MAP[segment.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
                                 const tokenTextColor = settings.theme === 'dark' ? `text-${color.bg.split('-')[1]}-300` : color.text;
@@ -329,6 +362,7 @@ const SentenceDisplay: React.FC<{
                                 )
                             })}
                         </p>
+                        <TranslationLine />
                      </div>
                  );
         }
@@ -346,15 +380,14 @@ const ChapterDisplay: React.FC<{
     chapterIndex: number;
     onSentenceClick: (sentenceIndex: number) => void;
     onTranslate: () => void;
-    onBackToAnalysis: () => void;
+    onStopTranslate: () => void;
     onUpdate: (update: Partial<ChapterData>) => void;
     onSaveToken: (token: TokenData) => void;
-}> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onBackToAnalysis, onUpdate, onSaveToken }) => {
+}> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onStopTranslate, onUpdate, onSaveToken }) => {
     const { settings, theme } = useSettings();
-    const isTranslating = chapter.translationState === 'loading';
-    const isTranslationDone = chapter.translationState === 'done';
-    const isTranslationError = chapter.translationState === 'error';
-    const isSentenceAnalysisView = chapter.translationState === 'pending';
+    const isTranslating = chapter.isBatchTranslating;
+    const untranslatedSentences = chapter.sentences.filter(s => !s.isTitle && s.translationState === 'pending');
+    const allSentencesTranslated = untranslatedSentences.length === 0;
 
     const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
         onUpdate({ isExpanded: e.currentTarget.open });
@@ -370,99 +403,57 @@ const ChapterDisplay: React.FC<{
                 <div className="flex items-center min-w-0 flex-1">
                     <ChevronDownIcon className={`w-5 h-5 mr-3 ${theme.mutedText} transition-transform duration-200 group-open:rotate-180 flex-shrink-0`} />
                     <span className={`flex-shrink-0 mr-3 px-2.5 py-1 text-xs font-semibold tracking-wider uppercase rounded-full ${theme.button.bg} ${theme.mutedText}`}>
-                        #{chapterIndex + 1}
+                        #{chapter.chapterNumber || chapterIndex + 1}
                     </span>
                     <h3 className={`text-lg font-bold ${theme.text} truncate`} title={chapter.title}>{chapter.title}</h3>
                 </div>
                  <div className="flex-shrink-0 ml-4">
-                    {isSentenceAnalysisView && (
+                    {isTranslating ? (
                         <button 
-                            onClick={(e) => { e.preventDefault(); onTranslate(); }} 
-                            className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg}`}
+                            onClick={(e) => { e.preventDefault(); onStopTranslate(); }} 
+                            className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors bg-red-500 text-white hover:bg-red-600`}
                         >
-                            <PlayIcon className="w-4 h-4" /> Dịch chương
+                            <StopIcon className="w-4 h-4" /> Dừng dịch
                         </button>
-                    )}
-                    {isTranslating && (
-                        <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                            <Spinner variant={settings.theme === 'dark' ? 'light' : 'dark'} />
-                            <span className={theme.mutedText}>Đang dịch...</span>
-                        </div>
-                    )}
-                     {isTranslationDone && (
-                        <div className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
-                           <CheckIcon className="w-4 h-4" />
-                           <span>Đã dịch & phân tích</span>
-                        </div>
+                    ) : (
+                         allSentencesTranslated ? (
+                             <div className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
+                                <CheckIcon className="w-4 h-4" />
+                                <span>Đã dịch xong</span>
+                             </div>
+                         ) : (
+                            <button 
+                                onClick={(e) => { e.preventDefault(); onTranslate(); }} 
+                                className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg}`}
+                            >
+                                <PlayIcon className="w-4 h-4" /> Dịch chương
+                            </button>
+                         )
                     )}
                 </div>
             </summary>
-            <div className={`p-4 border-t ${theme.border}`}>
-               {isSentenceAnalysisView && (
-                   <div className="space-y-2">
-                       {chapter.sentences.map((sentence, index) => (
-                           <SentenceDisplay
-                                key={index}
-                                sentence={sentence}
-                                onClick={() => onSentenceClick(index)}
-                                onSaveToken={onSaveToken}
-                           />
-                       ))}
-                   </div>
-               )}
-               {isTranslating && (
-                   <div className="flex flex-col items-center justify-center p-8 gap-3">
-                       <Spinner variant={settings.theme === 'dark' ? 'light' : 'dark'} />
-                       <span className={theme.mutedText}>Đang dịch và phân tích nền...</span>
-                   </div>
-               )}
-               {isTranslationError && (
-                    <div className="p-3 bg-red-50 text-red-700 rounded-lg">
-                        <p><strong>Lỗi dịch:</strong> {chapter.translationError}</p>
-                        <button onClick={onTranslate} className={`mt-2 px-3 py-1 ${theme.button.bg} ${theme.button.text} font-semibold rounded-md`}>
-                            Thử lại
-                        </button>
-                    </div>
-               )}
-               {isTranslationDone && chapter.translationResult && (
-                   <div className="space-y-6">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <h4 className={`font-semibold mb-2 ${theme.text}`}>Nội dung gốc (đã phân tích):</h4>
-                                <div className={`p-3 rounded-md ${theme.mainBg} max-h-[60vh] overflow-y-auto space-y-3`}>
-                                    {chapter.sentences.map((sentence, index) => {
-                                        if (sentence.analysisState === 'done' && sentence.analysisResult) {
-                                            return (
-                                                <div key={index} className={`${sentence.isTitle ? 'pb-2 border-b ' + theme.border : ''}`}>
-                                                    <p className="flex flex-wrap items-end gap-x-1.5 gap-y-2 leading-tight">
-                                                        {sentence.analysisResult.tokens.map((token, tIndex) => {
-                                                            const color = GRAMMAR_COLOR_MAP[token.grammarRole] || GRAMMAR_COLOR_MAP[GrammarRole.UNKNOWN];
-                                                            const tokenTextColor = settings.theme === 'dark' ? `text-${color.bg.split('-')[1]}-300` : color.text;
-                                                            return <span key={tIndex} className={`font-semibold text-lg ${tokenTextColor}`}>{token.character}</span>;
-                                                        })}
-                                                    </p>
-                                                </div>
-                                            )
-                                        }
-                                        return <p key={index} className={`${theme.mutedText} ${sentence.isTitle ? 'font-bold text-lg' : ''}`}>{sentence.original}</p>
-                                    })}
-                                </div>
-                            </div>
-                             <div>
-                                <h4 className={`font-semibold mb-2 ${theme.text}`}>Bản dịch:</h4>
-                                <div className={`p-3 rounded-md ${theme.mainBg} ${theme.text} max-h-[60vh] overflow-y-auto`}>
-                                    <pre className="whitespace-pre-wrap font-sans">{chapter.translationResult}</pre>
-                                </div>
-                            </div>
+            <div className={`p-4 border-t ${theme.border} space-y-4`}>
+                {isTranslating && (
+                    <div className="w-full bg-slate-200 rounded-full h-2.5 dark:bg-gray-700">
+                        <div 
+                            className="bg-blue-600 h-2.5 rounded-full transition-all duration-500" 
+                            style={{width: `${(chapter.batchTranslationProgress || 0) * 100}%`}}>
                         </div>
-                       <div className="flex justify-between items-center">
-                            <button onClick={onBackToAnalysis} className={`px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
-                                Quay lại Phân tích chi tiết
-                            </button>
-                            <AdvancedCopyButton chapter={chapter} />
-                       </div>
-                   </div>
-               )}
+                    </div>
+                )}
+                <div className="space-y-2">
+                    {chapter.sentences.map((sentence, index) => (
+                        <SentenceDisplay
+                            key={index}
+                            sentence={sentence}
+                            onClick={() => onSentenceClick(index)}
+                            onSaveToken={onSaveToken}
+                        />
+                    ))}
+                </div>
+                <div className="flex justify-end pt-2">
+                    <AdvancedCopyButton chapter={chapter} />
+                </div>
             </div>
         </details>
     );
@@ -594,10 +585,10 @@ const FileDisplay: React.FC<{
     onVisibleRangeUpdate: (newRange: { start: number; end: number }) => void;
     onPageSizeUpdate: (newSize: number) => void;
     onChapterTranslate: (chapterIndex: number) => void;
-    onBackToAnalysis: (chapterIndex: number) => void;
+    onChapterStopTranslate: (chapterIndex: number) => void;
     onChapterUpdate: (chapterIndex: number, newState: Partial<ChapterData>) => void;
     onSaveToken: (token: TokenData) => void;
-}> = ({ fileData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onBackToAnalysis, onChapterUpdate, onSaveToken }) => {
+}> = ({ fileData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onChapterStopTranslate, onChapterUpdate, onSaveToken }) => {
     
     const handleRangeChange = useCallback((newRange: { start: number; end: number }) => {
         const start = Math.max(0, newRange.start);
@@ -627,7 +618,7 @@ const FileDisplay: React.FC<{
                             chapterIndex={originalChapterIndex}
                             onSentenceClick={(sentenceIndex) => onSentenceClick(originalChapterIndex, sentenceIndex)}
                             onTranslate={() => onChapterTranslate(originalChapterIndex)}
-                            onBackToAnalysis={() => onBackToAnalysis(originalChapterIndex)}
+                            onStopTranslate={() => onChapterStopTranslate(originalChapterIndex)}
                             onUpdate={(update) => onChapterUpdate(originalChapterIndex, update)}
                             onSaveToken={onSaveToken}
                         />
@@ -672,22 +663,36 @@ const SettingsPanel: React.FC<{
                     <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Khóa API Gemini</h3>
                     <input
                         type="password"
-                        placeholder="Dán khóa API của bạn vào đây"
-                        value={settings.apiKey || ''}
+                        placeholder="Nhập khóa API của bạn"
+                        value={settings.apiKey}
                         onChange={(e) => setSettings(s => ({ ...s, apiKey: e.target.value }))}
-                        className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text} font-mono text-xs`}
-                    />
-                </div>
-                <div>
-                    <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Cỡ chữ (px)</h3>
-                     <input
-                        type="number"
-                        value={settings.fontSize}
-                        onChange={(e) => setSettings(s => ({ ...s, fontSize: Number(e.target.value) }))}
-                        min="12"
-                        max="24"
                         className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
                     />
+                </div>
+                 <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Cỡ chữ (px)</h3>
+                        <input
+                            type="number"
+                            value={settings.fontSize}
+                            onChange={(e) => setSettings(s => ({ ...s, fontSize: Number(e.target.value) }))}
+                            min="12"
+                            max="24"
+                            className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                        />
+                    </div>
+                     <div>
+                        <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Cao dòng</h3>
+                        <input
+                            type="number"
+                            value={settings.lineHeight}
+                            onChange={(e) => setSettings(s => ({ ...s, lineHeight: Number(e.target.value) }))}
+                            min="1.2"
+                            max="2.5"
+                            step="0.1"
+                            className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                        />
+                    </div>
                 </div>
                  <div>
                     <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Font chữ</h3>
@@ -705,9 +710,6 @@ const SettingsPanel: React.FC<{
                         <SettingButton value='sepia' label='Ngà' settingKey='theme' currentValue={settings.theme} />
                     </div>
                 </div>
-                 <p className={`text-xs ${theme.mutedText} text-center`}>
-                    Khóa API của bạn được lưu trữ an toàn trên trình duyệt của bạn.
-                </p>
             </div>
         </div>
     );
@@ -716,58 +718,194 @@ const SettingsPanel: React.FC<{
 const VocabularyModal: React.FC<{
     isOpen: boolean;
     onClose: () => void;
-    vocabulary: TokenData[];
-    onDelete: (tokenCharacter: string) => void;
-}> = ({ isOpen, onClose, vocabulary, onDelete }) => {
-    const { theme } = useSettings();
+    vocabulary: VocabularyItem[];
+    onDelete: (term: string) => void;
+    onAnalyze: () => void;
+    onStop: () => void;
+    isAnalyzing: boolean;
+    analysisProgress: number;
+    activeFile: ProcessedFile | undefined;
+    onProcessNextChunk: () => void;
+    vocabChunkSize: number;
+}> = ({ 
+    isOpen, onClose, vocabulary, onDelete, onAnalyze, onStop, isAnalyzing, analysisProgress, 
+    activeFile, onProcessNextChunk, vocabChunkSize 
+}) => {
+    const { settings, theme } = useSettings();
+    const [searchTerm, setSearchTerm] = useState('');
 
     if (!isOpen) return null;
+
+    const pendingCount = vocabulary.filter(v => v.analysisState === 'pending' && !v.grammarExplanation).length;
+    const filteredVocabulary = vocabulary.filter(item => item.term.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    // Chunking info
+    const totalChapters = activeFile?.chapters.length || 0;
+    const chunkIndex = activeFile?.vocabProcessingChunkIndex || 0;
+    const startChap = chunkIndex * vocabChunkSize + 1;
+    const endChap = Math.min((chunkIndex + 1) * vocabChunkSize, totalChapters);
+    const hasMoreChunks = endChap < totalChapters;
+    const nextChunkStartChap = endChap + 1;
+    const nextChunkEndChap = Math.min(endChap + vocabChunkSize, totalChapters);
+
+
+    const renderItemContent = (item: VocabularyItem) => {
+        const nounAnalysisDone = item.analysisState === 'done' && item.hanViet;
+        
+        return (
+            <div className="space-y-2 text-sm">
+                {/* Info from Proper Noun Analysis */}
+                {nounAnalysisDone && (
+                    <div className="pb-2">
+                        <p><strong className={theme.mutedText}>Hán Việt:</strong> {item.hanViet}</p>
+                        <p><strong className={theme.mutedText}>Loại:</strong> {item.category}</p>
+                        {item.explanation && <p className="mt-1">{item.explanation}</p>}
+                    </div>
+                )}
+                
+                {/* Info from Sentence Analysis */}
+                {item.grammarExplanation && (
+                    <div className={`pt-2 ${nounAnalysisDone ? `border-t ${theme.border}`: ''}`}>
+                        <p className="font-semibold">Phân tích trong câu:</p>
+                        <p><strong className={theme.mutedText}>Nghĩa:</strong> {item.vietnameseMeaning}</p>
+                        <p><strong className={theme.mutedText}>Vai trò:</strong> {item.grammarRole}</p>
+                        <p className="mt-1">{item.grammarExplanation}</p>
+                    </div>
+                )}
+                
+                 {/* Context Sentence */}
+                {item.contextSentence && (
+                    <div className={`pt-2 ${item.grammarExplanation || nounAnalysisDone ? `border-t ${theme.border}`: ''}`}>
+                         <p className={`italic ${theme.mutedText} border-l-2 ${theme.border} pl-2 text-xs`}>
+                             <strong className="not-italic font-semibold">Ngữ cảnh:</strong> {item.contextSentence}
+                         </p>
+                    </div>
+                )}
+
+                {/* Status for pending/loading/error noun analysis */}
+                {item.analysisState === 'pending' && !item.grammarExplanation && !nounAnalysisDone && <p className={theme.mutedText}>Chờ phân tích tên riêng.</p>}
+                {item.analysisState === 'loading' && (
+                     <div className="flex items-center gap-2 mt-1">
+                        <Spinner variant={theme.text.includes('slate-800') || theme.text.includes('stone-800') ? 'dark' : 'light'} />
+                        <span className={theme.mutedText}>Đang phân tích...</span>
+                    </div>
+                )}
+                 {item.analysisState === 'error' && <p className="text-red-500 mt-1">Lỗi phân tích tên: {item.analysisError}</p>}
+            </div>
+        );
+    };
+
 
     return (
         <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={onClose}>
             <div
-                className={`w-full max-w-2xl max-h-[80vh] flex flex-col ${theme.cardBg} rounded-xl shadow-2xl overflow-hidden`}
+                className={`w-full max-w-4xl max-h-[90vh] flex flex-col ${theme.cardBg} rounded-xl shadow-2xl overflow-hidden`}
                 onClick={e => e.stopPropagation()}
             >
-                <header className={`p-4 border-b ${theme.border} flex justify-between items-center`}>
-                    <h2 className={`text-xl font-bold ${theme.text}`}>Từ điển cá nhân</h2>
-                    <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
-                        <CloseIcon className="w-6 h-6" />
-                    </button>
-                </header>
-                <div className="p-4 overflow-y-auto space-y-3">
-                    {vocabulary.length === 0 ? (
-                        <p className={theme.mutedText}>Từ điển của bạn còn trống. Nhấp vào ngôi sao trên một từ đã phân tích để lưu nó vào đây.</p>
-                    ) : (
-                        vocabulary.map((token, index) => (
-                            <div key={index} className={`p-3 rounded-lg border ${theme.border} ${theme.mainBg} flex justify-between items-start`}>
-                                <div>
-                                    <p className="font-bold text-lg mb-1">
-                                        <span className={theme.text}>{token.character}</span>
-                                        <span className={`ml-3 text-base font-normal ${theme.mutedText}`}>{token.pinyin} / {token.sinoVietnamese}</span>
-                                    </p>
-                                    <p className={theme.text}><strong className={theme.mutedText}>Nghĩa:</strong> {token.vietnameseMeaning}</p>
-                                    <p className={theme.text}><strong className={theme.mutedText}>Vai trò:</strong> {token.grammarRole}</p>
-                                    <p className={`${theme.mutedText} text-sm mt-1`}>{token.grammarExplanation}</p>
-                                </div>
+                <header className={`p-4 border-b ${theme.border} flex-shrink-0`}>
+                    <div className="flex justify-between items-center">
+                        <h2 className={`text-xl font-bold ${theme.text}`}>Từ điển cá nhân</h2>
+                        <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
+                            <CloseIcon className="w-6 h-6" />
+                        </button>
+                    </div>
+                    <div className="mt-4 flex flex-col md:flex-row gap-4 justify-between items-start">
+                         <div className="flex-grow w-full md:w-auto">
+                            {isAnalyzing ? (
                                 <button
-                                    onClick={() => onDelete(token.character)}
-                                    className={`p-1.5 rounded-full text-red-400 hover:bg-red-500/10 hover:text-red-600 transition-colors`}
-                                    title="Xóa khỏi từ điển"
+                                    onClick={onStop}
+                                    className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md transition-colors bg-red-500 text-white hover:bg-red-600"
                                 >
-                                    <CloseIcon className="w-4 h-4" />
+                                    <StopIcon className="w-4 h-4" /> Dừng phân tích
                                 </button>
+                            ) : (
+                                <div className="flex flex-col items-start">
+                                    <button
+                                        onClick={onAnalyze}
+                                        disabled={pendingCount === 0}
+                                        className={`w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:bg-slate-400 disabled:cursor-not-allowed`}
+                                    >
+                                        <PlayIcon className="w-4 h-4" /> Lọc & Phân tích Tên riêng ({pendingCount} mục)
+                                    </button>
+                                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 max-w-sm">
+                                        AI sẽ dùng ngữ cảnh để tự động loại bỏ các từ thông thường và chỉ phân tích các tên riêng, thành ngữ quan trọng.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex flex-col items-end gap-2">
+                             <input
+                                type="text"
+                                placeholder="Tìm kiếm từ..."
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                className={`w-full md:w-64 p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
+                            />
+                             {totalChapters > vocabChunkSize && (
+                                <div className="space-y-1 text-right">
+                                    <p className={`text-xs ${theme.mutedText}`}>
+                                        Từ vựng từ chương {startChap}–{endChap} / {totalChapters}.
+                                    </p>
+                                    {hasMoreChunks && (
+                                        <button
+                                            onClick={onProcessNextChunk}
+                                            disabled={isAnalyzing}
+                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50`}
+                                        >
+                                            Tải thêm từ khối tiếp theo ({nextChunkStartChap}–{nextChunkEndChap})
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    {isAnalyzing && (
+                         <div className="mt-4">
+                             <p className={`text-sm mb-1 ${theme.mutedText}`}>Đang phân tích... {Math.round(analysisProgress * 100)}%</p>
+                             <div className="w-full bg-slate-200 rounded-full h-2 dark:bg-gray-700">
+                                <div
+                                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${analysisProgress * 100}%` }}>
+                                </div>
                             </div>
-                        ))
+                         </div>
+                    )}
+                </header>
+
+                <div className="p-4 overflow-y-auto space-y-3 flex-grow">
+                    {filteredVocabulary.length === 0 ? (
+                        <p className={theme.mutedText}>Từ điển của bạn còn trống hoặc không có kết quả tìm kiếm. Tải tệp mới để tự động điền hoặc lưu từ bằng biểu tượng ngôi sao.</p>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {filteredVocabulary.map((item, index) => (
+                                <div key={index} className={`p-3 rounded-lg border ${theme.border} ${theme.mainBg} flex justify-between items-start`}>
+                                    <div className="flex-grow min-w-0">
+                                        <p className="font-bold text-lg mb-2 truncate" title={item.term}>
+                                            <span className={theme.text}>{item.term}</span>
+                                        </p>
+                                        {renderItemContent(item)}
+                                    </div>
+                                    <button
+                                        onClick={() => onDelete(item.term)}
+                                        className={`ml-2 flex-shrink-0 p-1.5 rounded-full text-red-400 hover:bg-red-500/10 hover:text-red-600 transition-colors`}
+                                        title="Xóa khỏi từ điển"
+                                    >
+                                        <CloseIcon className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
                     )}
                 </div>
-                <footer className={`p-3 border-t ${theme.border} text-center`}>
+                 <footer className={`p-3 border-t ${theme.border} text-center flex-shrink-0`}>
                      <p className={`text-xs ${theme.mutedText}`}>Đã lưu {vocabulary.length} từ.</p>
                 </footer>
             </div>
         </div>
     );
 };
+
 
 const CacheLibraryModal: React.FC<{
     isOpen: boolean;
@@ -831,7 +969,7 @@ const CacheLibraryModal: React.FC<{
                         </div>
                     </section>
                     <section>
-                         <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Bản dịch chương ({translationEntries.length})</h3>
+                         <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Bản dịch câu ({translationEntries.length})</h3>
                          <div className="space-y-2">
                              {translationEntries.length === 0 ? (
                                 <p className={theme.mutedText}>Chưa có bản dịch nào được lưu.</p>
@@ -864,6 +1002,7 @@ const App = () => {
         fontSize: 16,
         fontFamily: 'font-sans',
         theme: 'light',
+        lineHeight: 1.6,
     });
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
@@ -875,12 +1014,25 @@ const App = () => {
     const [error, setError] = useState<ApiError | null>(null);
     const [analysisCache, setAnalysisCache] = useState<Map<string, AnalyzedText>>(new Map());
     const [translationCache, setTranslationCache] = useState<Map<string, string>>(new Map());
-    const [vocabulary, setVocabulary] = useState<TokenData[]>([]);
+    const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
+    const [isAnalyzingNames, setIsAnalyzingNames] = useState(false);
+    const [nameAnalysisProgress, setNameAnalysisProgress] = useState(0);
+
+    const stopTranslationRef = useRef<Set<string>>(new Set());
+    const stopNameAnalysisRef = useRef(false);
     
     useEffect(() => {
         try {
             const storedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            if (storedSettings) setSettings(s => ({...s, ...JSON.parse(storedSettings)}));
+            if (storedSettings) {
+                const parsed = JSON.parse(storedSettings);
+                setSettings(s => ({
+                    ...s,
+                    ...parsed,
+                    lineHeight: parsed.lineHeight || 1.6,
+                    apiKey: parsed.apiKey || '',
+                }));
+            }
             
             const storedAnalysisCache = localStorage.getItem(ANALYSIS_CACHE_STORAGE_KEY);
             if (storedAnalysisCache) setAnalysisCache(new Map(JSON.parse(storedAnalysisCache)));
@@ -920,11 +1072,37 @@ const App = () => {
     }, [vocabulary]);
 
 
+    const extractVocabularyFromChapters = (chaptersToScan: ChapterData[]): { term: string, contextSentence: string }[] => {
+        const phraseContextMap = new Map<string, string[]>();
+        const termRegex = /[\u4e00-\u9fa5]{2,5}/g;
+        const allSentencesInChunk = chaptersToScan.flatMap(c => c.sentences.map(s => s.original));
+
+        allSentencesInChunk.forEach(sentence => {
+            const uniquePhrasesInSentence = new Set(sentence.match(termRegex) || []);
+            uniquePhrasesInSentence.forEach(phrase => {
+                if (!phraseContextMap.has(phrase)) {
+                    phraseContextMap.set(phrase, []);
+                }
+                phraseContextMap.get(phrase)!.push(sentence);
+            });
+        });
+
+        const repeatingTermsWithContext: { term: string, contextSentence: string }[] = [];
+        phraseContextMap.forEach((sentences, term) => {
+            if (sentences.length > 1) { // It repeats if it's in more than 1 sentence
+                const longestSentence = sentences.reduce((a, b) => a.length > b.length ? a : b, "");
+                repeatingTermsWithContext.push({ term, contextSentence: longestSentence });
+            }
+        });
+        return repeatingTermsWithContext;
+    };
+
     const handleProcessText = useCallback((text: string, fileName: string) => {
         if (!text.trim()) {
             setError({ message: "Vui lòng nhập văn bản hoặc tải lên một tệp." });
             return;
         }
+
         setError(null);
         setIsLoading(true);
         setTimeout(() => {
@@ -936,12 +1114,34 @@ const App = () => {
                      return;
                 }
                 
+                const firstChunk = chapters.slice(0, VOCAB_CHAPTER_CHUNK_SIZE);
+                const repeatingTermsWithContext = extractVocabularyFromChapters(firstChunk);
+                
+                if (repeatingTermsWithContext.length > 0) {
+                    setVocabulary(prevVocab => {
+                        const existingTerms = new Set(prevVocab.map(item => item.term));
+                        const newItems: VocabularyItem[] = [];
+                        repeatingTermsWithContext.forEach(({ term, contextSentence }) => {
+                            if (!existingTerms.has(term)) {
+                                newItems.push({ 
+                                    term, 
+                                    contextSentence, // Add context here
+                                    analysisState: 'pending' 
+                                });
+                            }
+                        });
+                        return newItems.length > 0 ? [...prevVocab, ...newItems] : prevVocab;
+                    });
+                }
+
+
                 const newFile: ProcessedFile = {
                     id: Date.now(),
                     fileName,
                     chapters,
                     visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
                     pageSize: PAGE_SIZE,
+                    vocabProcessingChunkIndex: 0,
                 };
                 
                 setProcessedFiles(prev => [...prev, newFile]);
@@ -957,17 +1157,27 @@ const App = () => {
 
     const handleSaveToken = useCallback((tokenToSave: TokenData) => {
         setVocabulary(prevVocab => {
-            const isDuplicate = prevVocab.some(token => token.character === tokenToSave.character);
+            const isDuplicate = prevVocab.some(item => item.term === tokenToSave.character);
             if (isDuplicate) {
-                alert(`Từ "${tokenToSave.character}" đã có trong từ điển.`);
+                // Instead of alerting, maybe just highlight it? For now, alert is fine.
+                // Or enrich the existing one.
                 return prevVocab;
             }
-            return [...prevVocab, tokenToSave];
+            const newItem: VocabularyItem = {
+                term: tokenToSave.character,
+                analysisState: 'pending', // It's saved, but not yet analyzed as a proper noun
+                hanViet: tokenToSave.sinoVietnamese,
+                vietnameseMeaning: tokenToSave.vietnameseMeaning,
+                grammarRole: tokenToSave.grammarRole,
+                grammarExplanation: tokenToSave.grammarExplanation,
+                category: tokenToSave.grammarExplanation.toLowerCase().includes('thành ngữ') ? 'Thành ngữ' : 'Ngữ pháp',
+            };
+            return [...prevVocab, newItem];
         });
     }, []);
 
-    const handleDeleteVocabularyItem = useCallback((tokenCharacter: string) => {
-        setVocabulary(prevVocab => prevVocab.filter(token => token.character !== tokenCharacter));
+    const handleDeleteVocabularyItem = useCallback((termToDelete: string) => {
+        setVocabulary(prevVocab => prevVocab.filter(item => item.term !== termToDelete));
     }, []);
 
     const handleChapterUpdate = useCallback((chapterIndex: number, newState: Partial<ChapterData>) => {
@@ -980,29 +1190,42 @@ const App = () => {
             return file;
         }));
     }, [activeFileId]);
+    
+     const handleSentencesUpdate = useCallback((chapterIndex: number, sentenceUpdates: { index: number, update: Partial<SentenceData> }[]) => {
+        setProcessedFiles(prevFiles => prevFiles.map(file => {
+            if (file.id !== activeFileId) return file;
+            
+            const newChapters = [...file.chapters];
+            const chapterToUpdate = newChapters[chapterIndex];
+            if (!chapterToUpdate) return file;
+
+            const newSentences = [...chapterToUpdate.sentences];
+            sentenceUpdates.forEach(({ index, update }) => {
+                if (newSentences[index]) {
+                    newSentences[index] = { ...newSentences[index], ...update };
+                }
+            });
+            newChapters[chapterIndex] = { ...chapterToUpdate, sentences: newSentences };
+            return { ...file, chapters: newChapters };
+        }));
+    }, [activeFileId]);
+
 
     const handleSentenceClick = useCallback(async (chapterIndex: number, sentenceIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
         if (!file) return;
 
-        if (!settings.apiKey) {
-            setError({ message: "Vui lòng nhập khóa API Gemini trong Cài đặt (biểu tượng bánh răng) trước khi phân tích." });
-            setIsSettingsOpen(true);
-            return;
-        }
-
         const sentence = file.chapters[chapterIndex].sentences[sentenceIndex];
 
         const updateSentence = (update: Partial<SentenceData>) => {
-            setProcessedFiles(prevFiles => prevFiles.map(f => {
-                if (f.id !== activeFileId) return f;
-                const newChapters = [...f.chapters];
-                const newSentences = [...newChapters[chapterIndex].sentences];
-                newSentences[sentenceIndex] = { ...newSentences[sentenceIndex], ...update };
-                newChapters[chapterIndex] = { ...newChapters[chapterIndex], sentences: newSentences };
-                return { ...f, chapters: newChapters };
-            }));
+            handleSentencesUpdate(chapterIndex, [{ index: sentenceIndex, update }]);
         };
+        
+        if (!settings.apiKey) {
+            setError({ message: "Vui lòng nhập khóa API của bạn trong Cài đặt để phân tích câu." });
+            setIsSettingsOpen(true);
+            return;
+        }
 
         if (sentence.analysisState === 'loading') return;
 
@@ -1014,79 +1237,295 @@ const App = () => {
         const analysisCacheKey = sentence.original;
         if (analysisCache.has(analysisCacheKey)) {
             const cachedResult = analysisCache.get(analysisCacheKey)!;
-            updateSentence({ analysisState: 'done', analysisResult: cachedResult, isExpanded: !sentence.isTitle });
-            return;
+            updateSentence({ analysisState: 'done', analysisResult: cachedResult, isExpanded: true });
+            // Even with cache, enrich vocabulary
+        } else {
+             updateSentence({ analysisState: 'loading' });
         }
 
-        updateSentence({ analysisState: 'loading' });
 
         try {
-            const result = await analyzeSentence(sentence.original, settings.apiKey);
-            setAnalysisCache(prevCache => new Map(prevCache).set(analysisCacheKey, result));
-            updateSentence({ analysisState: 'done', analysisResult: result, isExpanded: !sentence.isTitle });
+            // Use cached result if available, otherwise fetch
+            const result = analysisCache.has(analysisCacheKey) 
+                ? analysisCache.get(analysisCacheKey)!
+                : await analyzeSentence(sentence.original, settings.apiKey);
+
+            if (!analysisCache.has(analysisCacheKey)) {
+                 setAnalysisCache(prevCache => new Map(prevCache).set(analysisCacheKey, result));
+            }
+            updateSentence({ analysisState: 'done', analysisResult: result, isExpanded: true });
+
+            // --- Auto-enrich vocabulary from analysis result (NO EXTRA API CALL) ---
+            setVocabulary(prevVocab => {
+                const newVocab = [...prevVocab];
+                const vocabMap = new Map(newVocab.map((item, index) => [item.term, { ...item, index }]));
+                let hasChanged = false;
+                
+                result.tokens.forEach(token => {
+                    // Only consider multi-character tokens as potential vocabulary
+                    if (token.character.length < 2) return;
+
+                    const term = token.character;
+                    const existingEntry = vocabMap.get(term);
+
+                    if (existingEntry) {
+                        // Entry exists, let's enrich it if it doesn't have grammar info yet
+                        const currentItem = newVocab[existingEntry.index];
+                        if (!currentItem.grammarExplanation) {
+                            currentItem.grammarExplanation = token.grammarExplanation;
+                            currentItem.grammarRole = token.grammarRole;
+                            currentItem.vietnameseMeaning = token.vietnameseMeaning;
+                            // Infer category if not set by name analysis
+                            if (!currentItem.category) {
+                                currentItem.category = token.grammarExplanation.toLowerCase().includes('thành ngữ') ? 'Thành ngữ' : 'Ngữ pháp';
+                            }
+                            hasChanged = true;
+                        }
+                    } else {
+                        // New entry found during analysis, add it with full details
+                        const newItem: VocabularyItem = {
+                            term: term,
+                            analysisState: 'pending', // Still pending for proper noun analysis
+                            hanViet: token.sinoVietnamese,
+                            vietnameseMeaning: token.vietnameseMeaning,
+                            grammarRole: token.grammarRole,
+                            grammarExplanation: token.grammarExplanation,
+                            category: token.grammarExplanation.toLowerCase().includes('thành ngữ') ? 'Thành ngữ' : 'Ngữ pháp',
+                        };
+                        newVocab.push(newItem);
+                        // update map for subsequent tokens in same sentence to avoid duplicates from one analysis
+                        vocabMap.set(term, { ...newItem, index: newVocab.length - 1 });
+                        hasChanged = true;
+                    }
+                });
+                
+                return hasChanged ? newVocab : prevVocab;
+            });
+            // --- End auto-enrich ---
+
         } catch (err: any) {
-            updateSentence({ analysisState: 'error', error: err.message });
+            updateSentence({ analysisState: 'error', analysisError: err.message });
+            setError({ message: err.message });
         }
-    }, [activeFileId, processedFiles, analysisCache, settings.apiKey]);
+    }, [activeFileId, processedFiles, analysisCache, settings.apiKey, handleSentencesUpdate]);
     
     const handleTranslateChapter = useCallback(async (chapterIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
         if (!file) return;
-        
+
         if (!settings.apiKey) {
-            setError({ message: "Vui lòng nhập khóa API Gemini trong Cài đặt (biểu tượng bánh răng) trước khi dịch." });
+            setError({ message: "Vui lòng nhập khóa API của bạn trong Cài đặt để dịch chương." });
             setIsSettingsOpen(true);
-            handleChapterUpdate(chapterIndex, { translationState: 'pending' });
+            return;
+        }
+        
+        const stopKey = `${file.id}-${chapterIndex}`;
+        stopTranslationRef.current.delete(stopKey);
+        
+        const chapter = file.chapters[chapterIndex];
+        const sentencesToTranslate = chapter.sentences
+            .map((s, i) => ({ ...s, originalIndex: i }))
+            .filter(s => !s.isTitle && s.translationState === 'pending');
+
+        const totalToTranslate = sentencesToTranslate.length;
+        if (totalToTranslate === 0) return;
+
+        handleChapterUpdate(chapterIndex, { isBatchTranslating: true, batchTranslationProgress: 0 });
+        
+        let translatedCount = 0;
+
+        for (let i = 0; i < totalToTranslate; i += TRANSLATION_BATCH_SIZE) {
+            if (stopTranslationRef.current.has(stopKey)) {
+                break;
+            }
+
+            const batch = sentencesToTranslate.slice(i, i + TRANSLATION_BATCH_SIZE);
+            const sentenceUpdatesLoading: {index: number, update: Partial<SentenceData>}[] = batch.map(s => ({
+                index: s.originalIndex,
+                update: { translationState: 'loading' }
+            }));
+            handleSentencesUpdate(chapterIndex, sentenceUpdatesLoading);
+
+            try {
+                const batchOriginals = batch.map(s => s.original);
+                const translationResults = await translateSentencesInBatch(batchOriginals, settings.apiKey);
+                
+                const sentenceUpdatesDone: {index: number, update: Partial<SentenceData>}[] = batch.map((s, j) => ({
+                    index: s.originalIndex,
+                    update: { translationState: 'done', translation: translationResults[j] }
+                }));
+                handleSentencesUpdate(chapterIndex, sentenceUpdatesDone);
+
+            } catch (err: any) {
+                const sentenceUpdatesError: {index: number, update: Partial<SentenceData>}[] = batch.map(s => ({
+                    index: s.originalIndex,
+                    update: { translationState: 'error', translationError: err.message }
+                }));
+                handleSentencesUpdate(chapterIndex, sentenceUpdatesError);
+                 setError({ message: err.message });
+            }
+            
+            translatedCount += batch.length;
+            const progress = totalToTranslate > 0 ? translatedCount / totalToTranslate : 0;
+            handleChapterUpdate(chapterIndex, { batchTranslationProgress: progress });
+        }
+        
+        // Finalize state
+        const chapterIsFullyTranslated = file.chapters[chapterIndex].sentences
+            .filter(s => !s.isTitle)
+            .every(s => s.translationState === 'done');
+            
+        handleChapterUpdate(chapterIndex, { 
+            isBatchTranslating: false,
+            batchTranslationProgress: chapterIsFullyTranslated ? 1 : (chapter.batchTranslationProgress || 0)
+        });
+        stopTranslationRef.current.delete(stopKey);
+
+    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate, settings.apiKey]);
+
+    const handleStopTranslateChapter = useCallback((chapterIndex: number) => {
+        const file = processedFiles.find(f => f.id === activeFileId);
+        if (file) {
+            const stopKey = `${file.id}-${chapterIndex}`;
+            stopTranslationRef.current.add(stopKey);
+            handleChapterUpdate(chapterIndex, { isBatchTranslating: false });
+            
+            const chapter = file.chapters[chapterIndex];
+            const sentenceUpdates: {index: number, update: Partial<SentenceData>}[] = [];
+            chapter.sentences.forEach((s, i) => {
+                if (s.translationState === 'loading') {
+                    sentenceUpdates.push({ index: i, update: { translationState: 'pending' } });
+                }
+            });
+            if (sentenceUpdates.length > 0) {
+                 handleSentencesUpdate(chapterIndex, sentenceUpdates);
+            }
+        }
+    }, [activeFileId, processedFiles, handleSentencesUpdate, handleChapterUpdate]);
+
+    const handleAnalyzeVocabulary = useCallback(async () => {
+        if (!settings.apiKey) {
+            setError({ message: "Vui lòng nhập khóa API của bạn trong Cài đặt để phân tích từ vựng." });
+            setIsSettingsOpen(true);
             return;
         }
 
-        const chapter = file.chapters[chapterIndex];
-        const translationCacheKey = `${file.id}-${chapter.title}`;
-        
-        handleChapterUpdate(chapterIndex, { translationState: 'loading' });
+        const itemsToAnalyze = vocabulary.filter(item => item.analysisState === 'pending' && !item.grammarExplanation);
+        const totalToAnalyze = itemsToAnalyze.length;
+        if (totalToAnalyze === 0) return;
 
-        // Trigger background analysis for all sentences
-        chapter.sentences.forEach((s, sIndex) => {
-            if (s.analysisState === 'pending') {
-                // Don't await, let them run in the background
-                handleSentenceClick(chapterIndex, sIndex);
-            }
-        });
+        stopNameAnalysisRef.current = false;
+        setIsAnalyzingNames(true);
+        setNameAnalysisProgress(0);
 
-        try {
-            let translationResult: string;
-            if (translationCache.has(translationCacheKey)) {
-                translationResult = translationCache.get(translationCacheKey)!;
-            } else {
-                const chapterContent = chapter.sentences.filter(s => !s.isTitle).map(s => s.original).join('\n');
-                translationResult = await translateChapter(chapterContent, settings.apiKey);
-                setTranslationCache(prev => new Map(prev).set(translationCacheKey, translationResult));
-            }
+        let analyzedCount = 0;
+
+        for (let i = 0; i < totalToAnalyze; i += VOCABULARY_ANALYSIS_BATCH_SIZE) {
+            if (stopNameAnalysisRef.current) break;
             
-            handleChapterUpdate(chapterIndex, {
-                translationState: 'done',
-                translationResult: translationResult,
-            });
+            const batch = itemsToAnalyze.slice(i, i + VOCABULARY_ANALYSIS_BATCH_SIZE);
+            setVocabulary(prev => prev.map(item => batch.find(b => b.term === item.term) ? { ...item, analysisState: 'loading' } : item));
+            
+            try {
+                const batchWithContext = batch.map(item => ({
+                    term: item.term,
+                    contextSentence: item.contextSentence
+                }));
+                
+                const results = await analyzeProperNounsInBatch(batchWithContext, settings.apiKey);
+                
+                const resultMap = new Map(results.map(r => [r.term, r]));
 
-        } catch (err: any)
-        {
-            handleChapterUpdate(chapterIndex, { translationState: 'error', translationError: err.message });
+                setVocabulary(currentVocab => {
+                    // First, remove items from this batch that were filtered out by the API
+                    const filteredVocab = currentVocab.filter(item => {
+                        const isInBatch = batch.some(b => b.term === item.term);
+                        if (isInBatch) {
+                            return resultMap.has(item.term); // Keep only if it was returned by API
+                        }
+                        return true; // Keep all items not in the current batch
+                    });
+                    
+                    // Then, update the items that were successfully analyzed
+                    return filteredVocab.map(item => {
+                        if (resultMap.has(item.term)) {
+                            const result = resultMap.get(item.term)!;
+                            // Spread the old item to keep existing grammar info, then spread result
+                            return { ...item, ...result, analysisState: 'done' };
+                        }
+                        return item;
+                    });
+                });
+
+            } catch (err: any) {
+                setVocabulary(prev => prev.map(item => {
+                    if (batch.find(b => b.term === item.term)) {
+                        return { ...item, analysisState: 'error', analysisError: err.message };
+                    }
+                    return item;
+                }));
+                setError({ message: `Lỗi phân tích từ vựng: ${err.message}` });
+            }
+
+            analyzedCount += batch.length; // Progress is based on batches sent, not results received
+            const progress = totalToAnalyze > 0 ? analyzedCount / totalToAnalyze : 0;
+            setNameAnalysisProgress(progress);
         }
-    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentenceClick, translationCache, settings.apiKey]);
 
-    const handleBackToSentenceAnalysis = useCallback((chapterIndex: number) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id !== activeFileId) return file;
-            const newChapters = [...file.chapters];
-            newChapters[chapterIndex] = { 
-                ...newChapters[chapterIndex], 
-                translationState: 'pending', 
-                translationResult: undefined,
-                translationError: undefined,
-            };
-            return { ...file, chapters: newChapters };
+        setIsAnalyzingNames(false);
+        stopNameAnalysisRef.current = false;
+
+        // Clean up context sentences from all successfully analyzed items to save memory
+        setVocabulary(currentVocab => currentVocab.map(item => {
+            if (item.analysisState === 'done' && item.contextSentence) {
+                const { contextSentence, ...rest } = item;
+                return rest as VocabularyItem;
+            }
+            return item;
         }));
-    }, [activeFileId]);
+
+
+    }, [vocabulary, settings.apiKey]);
+    
+    const handleStopAnalyzeVocabulary = useCallback(() => {
+        stopNameAnalysisRef.current = true;
+        setVocabulary(prev => prev.map(item => item.analysisState === 'loading' ? { ...item, analysisState: 'pending' } : item));
+        setIsAnalyzingNames(false);
+    }, []);
+
+    const handleProcessNextVocabularyChunk = useCallback(() => {
+        const file = processedFiles.find(f => f.id === activeFileId);
+        if (!file) return;
+
+        const newChunkIndex = file.vocabProcessingChunkIndex + 1;
+        const startIndex = newChunkIndex * VOCAB_CHAPTER_CHUNK_SIZE;
+        if (startIndex >= file.chapters.length) {
+            return; // No more chunks
+        }
+        const endIndex = Math.min(startIndex + VOCAB_CHAPTER_CHUNK_SIZE, file.chapters.length);
+        const chapterChunk = file.chapters.slice(startIndex, endIndex);
+
+        const newRepeatingTerms = extractVocabularyFromChapters(chapterChunk);
+
+        if (newRepeatingTerms.length > 0) {
+            setVocabulary(prevVocab => {
+                const existingTerms = new Set(prevVocab.map(item => item.term));
+                const newItems: VocabularyItem[] = newRepeatingTerms
+                    .filter(({ term }) => !existingTerms.has(term))
+                    .map(({ term, contextSentence }) => ({
+                        term,
+                        contextSentence,
+                        analysisState: 'pending'
+                    }));
+                return [...prevVocab, ...newItems];
+            });
+        }
+
+        // Update file state with the new chunk index
+        setProcessedFiles(prevFiles => prevFiles.map(f =>
+            f.id === activeFileId ? { ...f, vocabProcessingChunkIndex: newChunkIndex } : f
+        ));
+    }, [activeFileId, processedFiles]);
 
     const handleVisibleRangeUpdate = useCallback((newRange: { start: number; end: number }) => {
          setProcessedFiles(prevFiles => prevFiles.map(file => {
@@ -1154,9 +1593,21 @@ const App = () => {
         <SettingsContext.Provider value={{ settings, setSettings, theme: themeClasses }}>
             <div 
                 className={`min-h-screen transition-colors duration-300 ${themeClasses.mainBg} ${themeClasses.text} ${settings.fontFamily}`}
-                style={{ fontSize: `${settings.fontSize}px`}}
+                style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}
             >
-                <VocabularyModal isOpen={isVocabularyOpen} onClose={() => setIsVocabularyOpen(false)} vocabulary={vocabulary} onDelete={handleDeleteVocabularyItem} />
+                <VocabularyModal 
+                    isOpen={isVocabularyOpen}
+                    onClose={() => setIsVocabularyOpen(false)} 
+                    vocabulary={vocabulary} 
+                    onDelete={handleDeleteVocabularyItem}
+                    onAnalyze={handleAnalyzeVocabulary}
+                    onStop={handleStopAnalyzeVocabulary}
+                    isAnalyzing={isAnalyzingNames}
+                    analysisProgress={nameAnalysisProgress}
+                    activeFile={activeFile}
+                    onProcessNextChunk={handleProcessNextVocabularyChunk}
+                    vocabChunkSize={VOCAB_CHAPTER_CHUNK_SIZE}
+                />
                 <CacheLibraryModal 
                     isOpen={isCacheLibraryOpen} 
                     onClose={() => setIsCacheLibraryOpen(false)} 
@@ -1225,7 +1676,7 @@ const App = () => {
                                     onVisibleRangeUpdate={handleVisibleRangeUpdate}
                                     onPageSizeUpdate={handlePageSizeUpdate}
                                     onChapterTranslate={handleTranslateChapter}
-                                    onBackToAnalysis={handleBackToSentenceAnalysis}
+                                    onChapterStopTranslate={handleStopTranslateChapter}
                                     onChapterUpdate={handleChapterUpdate}
                                     onSaveToken={handleSaveToken}
                                />
