@@ -1,4 +1,5 @@
 
+
 export interface ApiError {
     message: string;
 }
@@ -54,8 +55,11 @@ export interface ChapterData {
     batchTranslationProgress?: number;
 
     isBatchAnalyzing?: boolean;
-
     batchAnalysisProgress?: number; 
+    
+    isLoaded?: boolean;
+    hasContent?: boolean;
+    chapterError?: string;
 }
 
 export interface ProcessedFile {

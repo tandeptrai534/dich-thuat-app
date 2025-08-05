@@ -233,6 +233,8 @@ function processTextIntoChapters(text: string): ChapterData[] {
                 totalParts,
                 sentences: [titleSentence, ...chunk.sentences],
                 isExpanded: false,
+                isLoaded: true, // Freshly processed chapters are always "loaded"
+                hasContent: true,
             });
         });
     };
@@ -767,20 +769,25 @@ const ChapterDisplay: React.FC<{
     onAnalyze: () => void;
     onStopAnalyze: () => void;
     onUpdate: (update: Partial<ChapterData>) => void;
+    onLoadChapterContent: () => void;
     isApiBusy: boolean;
-}> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onStopTranslate, onAnalyze, onStopAnalyze, onUpdate, isApiBusy }) => {
+}> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onStopTranslate, onAnalyze, onStopAnalyze, onUpdate, onLoadChapterContent, isApiBusy }) => {
     const { theme, settings } = useSettings();
     
     const untranslatedSentences = chapter.sentences.filter(s => !s.isTitle && s.translationState === 'pending').length;
     const unanalyzedSentences = chapter.sentences.filter(s => s.analysisState === 'pending').length;
 
-    const allSentencesTranslated = untranslatedSentences === 0;
-    const allSentencesAnalyzed = unanalyzedSentences === 0;
+    const allSentencesTranslated = chapter.isLoaded && untranslatedSentences === 0;
+    const allSentencesAnalyzed = chapter.isLoaded && unanalyzedSentences === 0;
     const isApiKeyMissing = !settings.apiKey;
 
 
     const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
-        onUpdate({ isExpanded: e.currentTarget.open });
+        const isOpen = e.currentTarget.open;
+        onUpdate({ isExpanded: isOpen });
+        if (isOpen && !chapter.isLoaded && chapter.hasContent) {
+            onLoadChapterContent();
+        }
     };
 
     const renderChapterNumber = () => {
@@ -799,6 +806,14 @@ const ChapterDisplay: React.FC<{
     };
 
     const renderChapterActions = () => {
+        if (!chapter.isLoaded) {
+             return (
+                <div className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-slate-500 dark:text-slate-400">
+                    <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
+                    <span>Đang tải...</span>
+                </div>
+            );
+        }
         if (chapter.isBatchTranslating) {
             return (
                 <button onClick={(e) => { e.preventDefault(); onStopTranslate(); }} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors bg-red-500 text-white hover:bg-red-600`}>
@@ -854,6 +869,12 @@ const ChapterDisplay: React.FC<{
                 </div>
             </summary>
             <div className={`p-4 border-t ${theme.border} space-y-4`}>
+                {chapter.chapterError && (
+                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                        <strong className="font-bold">Lỗi chương: </strong>
+                        <span className="block sm:inline">{chapter.chapterError}</span>
+                    </div>
+                )}
                 {chapter.isBatchTranslating && (
                     <div className="space-y-1">
                         <p className={`text-sm ${theme.mutedText}`}>Đang dịch ({untranslatedSentences} câu còn lại)...</p>
@@ -882,7 +903,7 @@ const ChapterDisplay: React.FC<{
                     ))}
                 </div>
                 <div className="flex justify-end pt-2">
-                    <AdvancedCopyButton chapter={chapter} />
+                    {chapter.isLoaded && <AdvancedCopyButton chapter={chapter} />}
                 </div>
             </div>
         </details>
@@ -1054,8 +1075,9 @@ const FileDisplay: React.FC<{
     onChapterAnalyze: (chapterIndex: number) => void;
     onChapterStopAnalyze: (chapterIndex: number) => void;
     onChapterUpdate: (chapterIndex: number, newState: Partial<ChapterData>) => void;
+    onChapterLoadContent: (chapterIndex: number) => void;
     isApiBusy: boolean;
-}> = ({ fileData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onChapterStopTranslate, onChapterAnalyze, onChapterStopAnalyze, onChapterUpdate, isApiBusy }) => {
+}> = ({ fileData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onChapterStopTranslate, onChapterAnalyze, onChapterStopAnalyze, onChapterUpdate, onChapterLoadContent, isApiBusy }) => {
     
     const handleRangeChange = useCallback((newRange: { start: number; end: number }) => {
         const start = Math.max(0, newRange.start);
@@ -1087,6 +1109,7 @@ const FileDisplay: React.FC<{
                             onAnalyze={() => onChapterAnalyze(originalChapterIndex)}
                             onStopAnalyze={() => onChapterStopAnalyze(originalChapterIndex)}
                             onUpdate={(update) => onChapterUpdate(originalChapterIndex, update)}
+                            onLoadChapterContent={() => onChapterLoadContent(originalChapterIndex)}
                             isApiBusy={isApiBusy}
                         />
                     )
@@ -1735,7 +1758,7 @@ const App = () => {
     const [googleUser, setGoogleUser] = useState<any>(null);
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
     const userMenuRef = useRef<HTMLDivElement>(null);
-    const debouncedSaveRef = useRef<NodeJS.Timeout>();
+    const debouncedSaveRef = useRef<ReturnType<typeof setTimeout>>();
 
 
     // Task Queue State
@@ -1779,9 +1802,24 @@ const App = () => {
             let hasChanges = false;
             processedFiles.forEach(file => {
                 if (file.driveFileId) {
-                    const { id, originalContent, ...rest } = file;
-                    // A quick check to see if the object has actually changed before updating
-                    if (JSON.stringify(rest) !== JSON.stringify(updatedCache.get(file.driveFileId))) {
+                    // Reconstruct the full chapter data from the lazy-loaded file state before saving
+                    const fileToCache = { ...file };
+                    const cachedFile = prevCache.get(file.driveFileId);
+                    
+                    // If the file was lazy-loaded, we need to merge back the full sentence data
+                    // from the original cache for chapters that are now loaded.
+                    if (cachedFile) {
+                        fileToCache.chapters = file.chapters.map((chapter, index) => {
+                             if (chapter.isLoaded) {
+                                return chapter; // Already has full data
+                            }
+                            // Not loaded in UI, so use original full data from cache
+                            return cachedFile.chapters[index] || chapter;
+                        });
+                    }
+
+                    const { id, originalContent, ...rest } = fileToCache;
+                    if (JSON.stringify(rest) !== JSON.stringify(cachedFile)) {
                         updatedCache.set(file.driveFileId, rest);
                         hasChanges = true;
                     }
@@ -2375,6 +2413,9 @@ const App = () => {
         setProcessedFiles(prevFiles => {
             return prevFiles.map(file => {
                 const newChapters = file.chapters.map(chapter => {
+                    // Only modify loaded chapters
+                    if (!chapter.isLoaded) return chapter;
+
                     const newSentences = chapter.sentences.map(sentence => {
                         let newTranslation = sentence.translation;
                         if (!newTranslation) return sentence;
@@ -2406,6 +2447,9 @@ const App = () => {
         const start = targetPage * pageSize;
         const end = Math.min(start + pageSize, file.chapters.length);
         
+        // This function will also trigger loading the chapter content if not already loaded
+        handleLoadChapterContent(chapterIndex);
+        
         handleVisibleRangeUpdate({ start, end });
         handleChapterUpdate(chapterIndex, { isExpanded: true });
         
@@ -2413,7 +2457,7 @@ const App = () => {
     }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
     
     const packDataForExport = () => ({
-        version: '1.3',
+        version: '1.4', // Version bump for lazy-loading structure
         createdAt: new Date().toISOString(),
         data: {
             settings,
@@ -2517,6 +2561,46 @@ a.click();
         setActiveFileId(null);
     };
     
+    const handleLoadChapterContent = useCallback((chapterIndex: number) => {
+        setProcessedFiles(prevFiles => {
+            const fileIndex = prevFiles.findIndex(f => f.id === activeFileId);
+            if (fileIndex === -1) return prevFiles;
+    
+            const file = prevFiles[fileIndex];
+            if (!file.driveFileId) return prevFiles;
+    
+            const chapterToLoad = file.chapters[chapterIndex];
+            if (!chapterToLoad || chapterToLoad.isLoaded || !chapterToLoad.hasContent) {
+                return prevFiles;
+            }
+    
+            const cachedFileData = filesCache.get(file.driveFileId);
+            if (!cachedFileData) {
+                console.error("Cache miss for chapter content. This should not happen.");
+                const newChapters = [...file.chapters];
+                newChapters[chapterIndex] = { ...chapterToLoad, isLoaded: true, sentences: [], chapterError: "Lỗi: Không tìm thấy nội dung cache." };
+                const newFiles = [...prevFiles];
+                newFiles[fileIndex] = { ...file, chapters: newChapters };
+                return newFiles;
+            }
+    
+            const fullChapterData = cachedFileData.chapters[chapterIndex];
+            if (fullChapterData) {
+                const newChapters = [...file.chapters];
+                newChapters[chapterIndex] = {
+                    ...newChapters[chapterIndex],
+                    sentences: fullChapterData.sentences,
+                    isLoaded: true,
+                };
+                const newFiles = [...prevFiles];
+                newFiles[fileIndex] = { ...file, chapters: newChapters };
+                return newFiles;
+            }
+            
+            return prevFiles;
+        });
+    }, [activeFileId, filesCache]);
+
     const handleOpenFileFromWorkspace = async (item: WorkspaceItem) => {
         // If already open, just switch to it
         const existingFile = processedFiles.find(f => f.driveFileId === item.driveFileId);
@@ -2525,13 +2609,26 @@ a.click();
             return;
         }
 
-        // Check our new cache first!
+        // Check our cache first for lazy loading
         const cachedFileData = filesCache.get(item.driveFileId);
         if (cachedFileData) {
+            const lazyChapters = cachedFileData.chapters.map(ch => ({
+                ...ch,
+                sentences: [], // IMPORTANT: Start with empty sentences to save memory
+                isLoaded: false,
+                hasContent: ch.sentences && ch.sentences.length > 0,
+            }));
+    
             const newFile: ProcessedFile = {
                 id: Date.now() + Math.random(),
-                ...cachedFileData,
-                originalContent: '', // Not needed immediately, we have sentence.original
+                fileName: cachedFileData.fileName,
+                chapters: lazyChapters,
+                visibleRange: cachedFileData.visibleRange || { start: 0, end: Math.min(PAGE_SIZE, lazyChapters.length) },
+                pageSize: cachedFileData.pageSize || PAGE_SIZE,
+                driveFileId: item.driveFileId,
+                type: cachedFileData.type,
+                lastModified: cachedFileData.lastModified,
+                originalContent: '', // Not needed immediately, we have the cache
             };
             setProcessedFiles(prev => [...prev, newFile]);
             setActiveFileId(newFile.id);
@@ -2793,6 +2890,7 @@ a.click();
                                     onChapterAnalyze={(ci) => setTaskQueue(prev => [...prev, {id: `analyze-seq-${activeFile.id}-${ci}`, description: `Phân tích chương #${ci+1}`, action: () => handleAnalyzeChapterSequentially(ci)}])}
                                     onChapterStopAnalyze={(ci) => stopProcess('analyze', ci)}
                                     onChapterUpdate={handleChapterUpdate}
+                                    onChapterLoadContent={handleLoadChapterContent}
                                     isApiBusy={isApiBusy}
                                />
                            </div>
