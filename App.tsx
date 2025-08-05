@@ -2,6 +2,8 @@
 
 
 
+
+
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
@@ -36,7 +38,7 @@ const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
 const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5'; // version bump for new structure
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;
 
-const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
 
 // --- Types ---
