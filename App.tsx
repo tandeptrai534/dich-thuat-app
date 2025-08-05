@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
@@ -358,28 +359,154 @@ const VocabularyTerm: React.FC<{ vocabItem: VocabularyItem }> = ({ vocabItem }) 
     );
 };
 
+const TranslationTerm: React.FC<{ vocabItem: VocabularyItem; matchedText: string }> = ({ vocabItem, matchedText }) => {
+    const [isPopupVisible, setIsPopupVisible] = useState(false);
+    const { theme } = useSettings();
+    const anchorRef = useRef<HTMLSpanElement>(null);
+    const popupRef = useRef<HTMLDivElement>(null);
+    const [style, setStyle] = useState<React.CSSProperties>({});
+
+    const handleTogglePopup = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setIsPopupVisible(p => !p);
+    };
+
+    useEffect(() => {
+        if (isPopupVisible && anchorRef.current && popupRef.current) {
+            const anchorRect = anchorRef.current.getBoundingClientRect();
+            const popupRect = popupRef.current.getBoundingClientRect();
+            const { innerWidth, innerHeight } = window;
+            const margin = 8;
+            let top = anchorRect.top - popupRect.height - margin;
+            let left = anchorRect.left + (anchorRect.width / 2) - (popupRect.width / 2);
+
+            if (top < margin) {
+                top = anchorRect.bottom + margin;
+            }
+            if (left < margin) {
+                left = margin;
+            }
+            if (left + popupRect.width > innerWidth - margin) {
+                left = innerWidth - popupRect.width - margin;
+            }
+
+            setStyle({ top, left, position: 'fixed', visibility: 'visible' });
+        }
+
+        const handleClose = (e: MouseEvent | KeyboardEvent) => {
+            if (e instanceof KeyboardEvent && e.key === 'Escape') {
+                setIsPopupVisible(false);
+            } else if (e instanceof MouseEvent) {
+                if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
+                    setIsPopupVisible(false);
+                }
+            }
+        };
+
+        if (isPopupVisible) {
+            document.addEventListener('mousedown', handleClose);
+            document.addEventListener('keydown', handleClose);
+        }
+
+        return () => {
+            document.removeEventListener('mousedown', handleClose);
+            document.removeEventListener('keydown', handleClose);
+        };
+    }, [isPopupVisible]);
+
+    return (
+        <span className="relative inline-block">
+            <span
+                ref={anchorRef}
+                className="font-semibold cursor-pointer text-green-600 dark:text-green-400 border-b border-green-500/50 border-dashed hover:bg-green-500/10"
+                onClick={handleTogglePopup}
+            >
+                {matchedText}
+            </span>
+            {isPopupVisible && ReactDOM.createPortal(
+                <div
+                    ref={popupRef}
+                    style={style}
+                    className={`w-72 p-4 z-50 ${theme.popupBg} border ${theme.border} ${theme.popupText} text-sm rounded-lg shadow-2xl transition-opacity duration-200`}
+                    onClick={e => e.stopPropagation()}
+                >
+                    <button 
+                        onClick={() => setIsPopupVisible(false)}
+                        className={`absolute top-2 right-2 p-1.5 rounded-full ${theme.mutedText} hover:bg-slate-500/20`}
+                        aria-label="Đóng popup"
+                    >
+                        <CloseIcon className="w-5 h-5" />
+                    </button>
+                    <div className="flex justify-between items-start mb-2 pr-6">
+                        <div className="flex flex-col">
+                            <span className="font-bold text-lg text-blue-400">{vocabItem.term}</span>
+                            <span className="text-sm font-semibold">{vocabItem.sinoVietnamese}</span>
+                        </div>
+                        <span className={`px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-200 text-slate-700 dark:bg-slate-600 dark:text-slate-200`}>{vocabItem.category}</span>
+                    </div>
+                    <p>{vocabItem.explanation}</p>
+                </div>,
+                document.body
+            )}
+        </span>
+    );
+};
+
 const InteractiveText: React.FC<{ text: string | undefined }> = ({ text }) => {
     const { vocabulary } = useSettings();
 
     if (!text) return null;
 
-    const interactiveTerms = vocabulary.filter(v => v.isForceSino && v.sinoVietnamese && v.sinoVietnamese.trim() !== '');
+    // Type 1: Terms that are forced to be Sino-Vietnamese in the output (blue)
+    const sinoTerms = vocabulary.filter(v => v.isForceSino && v.sinoVietnamese?.trim());
+    const sinoTermMap = new Map(sinoTerms.map(item => [item.sinoVietnamese.toLowerCase(), item]));
 
-    if (interactiveTerms.length === 0) {
+    // Type 2: Natural Vietnamese translations that are linked to a vocabulary item (green)
+    const translationTerms = vocabulary.filter(v =>
+        !v.isForceSino &&
+        v.vietnameseTranslation?.trim() &&
+        v.sinoVietnamese?.trim()
+    );
+    const translationTermMap = new Map(translationTerms.map(item => [item.vietnameseTranslation.toLowerCase(), item]));
+
+    const allSearchStrings = [
+        ...sinoTerms.map(v => v.sinoVietnamese),
+        ...translationTerms.map(v => v.vietnameseTranslation)
+    ];
+
+    if (allSearchStrings.length === 0) {
+        return <>{text}</>;
+    }
+    
+    // Using Set to get unique search strings, then sorting by length to match longer phrases first
+    const uniqueSearchStrings = [...new Set(allSearchStrings.filter(s => s))].sort((a, b) => b.length - a.length);
+
+    if (uniqueSearchStrings.length === 0) {
         return <>{text}</>;
     }
 
-    const termMap = new Map(interactiveTerms.map(item => [item.sinoVietnamese.toLowerCase(), item]));
-    const regex = new RegExp(`(${interactiveTerms.map(v => escapeRegex(v.sinoVietnamese)).join('|')})`, 'gi');
+    const regex = new RegExp(`(${uniqueSearchStrings.map(escapeRegex).join('|')})`, 'gi');
     const parts = text.split(regex);
 
     return (
         <>
             {parts.map((part, index) => {
-                const vocabItem = termMap.get(part.toLowerCase());
-                if (vocabItem) {
-                    return <VocabularyTerm key={index} vocabItem={vocabItem} />;
+                if (!part) return null; // Handle empty strings from split
+                const partLower = part.toLowerCase();
+
+                // Check for a forced Sino term match first
+                const sinoVocabItem = sinoTermMap.get(partLower);
+                if (sinoVocabItem) {
+                    return <VocabularyTerm key={index} vocabItem={sinoVocabItem} />;
                 }
+
+                // If not, check for a natural translation match
+                const translationVocabItem = translationTermMap.get(partLower);
+                if (translationVocabItem) {
+                    return <TranslationTerm key={index} vocabItem={translationVocabItem} matchedText={part} />;
+                }
+                
+                // If no match, return the text part
                 return <React.Fragment key={index}>{part}</React.Fragment>;
             })}
         </>
@@ -1863,7 +1990,7 @@ const App = () => {
         if (sentence.analysisState === 'loading') return;
 
         if (sentence.analysisState === 'done') {
-            const modes: DisplayMode[] = ['detailed-word', 'grammar', 'translation', 'original'];
+            const modes: DisplayMode[] = ['translation', 'grammar', 'detailed-word', 'original'];
             const currentModeIndex = modes.indexOf(sentence.displayMode!);
             const nextMode = modes[(currentModeIndex + 1) % modes.length];
             updateSentence({ displayMode: nextMode });
@@ -1875,7 +2002,7 @@ const App = () => {
         const analysisCacheKey = sentence.original;
         if (analysisCache.has(analysisCacheKey)) {
             const cachedResult = analysisCache.get(analysisCacheKey)!;
-            updateSentence({ analysisState: 'done', analysisResult: cachedResult, displayMode: 'detailed-word' });
+            updateSentence({ analysisState: 'done', analysisResult: cachedResult, displayMode: 'translation' });
             return;
         } 
         
@@ -1888,7 +2015,7 @@ const App = () => {
                 try {
                     const result = await analyzeSentence(sentence.original, settings.apiKey, forcedSinoTerms);
                     setAnalysisCache(prevCache => new Map(prevCache).set(analysisCacheKey, result));
-                    updateSentence({ analysisState: 'done', analysisResult: result, displayMode: 'detailed-word' });
+                    updateSentence({ analysisState: 'done', analysisResult: result, displayMode: 'translation' });
 
                     if (result.specialTerms && result.specialTerms.length > 0) {
                         const location: VocabularyLocation = {
@@ -2006,7 +2133,7 @@ const App = () => {
                     setAnalysisCache(prev => new Map(prev).set(analysisCacheKey, result));
                 }
 
-                handleSentencesUpdate(chapterIndex, [{ index: sentence.originalIndex, update: { analysisState: 'done', analysisResult: result, displayMode: 'detailed-word' } }]);
+                handleSentencesUpdate(chapterIndex, [{ index: sentence.originalIndex, update: { analysisState: 'done', analysisResult: result, displayMode: 'translation' } }]);
                 
                 if (result.specialTerms && result.specialTerms.length > 0) {
                     const location: VocabularyLocation = {
