@@ -1583,14 +1583,32 @@ const App = () => {
             return;
         }
 
+        const timeoutId = setTimeout(() => {
+            setGoogleApiStatus(prevStatus => {
+                if (prevStatus.status === 'pending') {
+                    return { status: 'error', message: 'Quá thời gian khởi tạo dịch vụ Google. Vui lòng kiểm tra kết nối mạng hoặc thử tải lại trang.' };
+                }
+                return prevStatus;
+            });
+        }, 15000);
+
         let gapiLoaded = false;
         let gisLoaded = false;
 
         const checkCompletion = () => {
             if (gapiLoaded && gisLoaded) {
+                clearTimeout(timeoutId);
                 setGoogleApiStatus({ status: 'ready', message: 'Dịch vụ Google đã sẵn sàng.' });
             }
         };
+
+        const handleError = (service: string, error: any) => {
+            clearTimeout(timeoutId);
+            console.error(`${service} initialization error:`, error);
+            const message = error instanceof Error ? error.message : String(error);
+            setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo ${service}: ${message}` });
+        };
+
 
         const handleGapiLoad = () => {
              if (!window.gapi) return;
@@ -1603,8 +1621,7 @@ const App = () => {
                     gapiLoaded = true;
                     checkCompletion();
                 } catch(error: any) {
-                    console.error("GAPI client initialization error:", error);
-                    setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo GAPI: ${error.message || 'Unknown error'}` });
+                    handleError('GAPI', error);
                 }
             });
         };
@@ -1641,8 +1658,7 @@ const App = () => {
                 gisLoaded = true;
                 checkCompletion();
             } catch (error: any) {
-                console.error("GIS client initialization error:", error);
-                setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo Google Sign-In: ${error.message || 'Unknown error'}` });
+                handleError('Google Sign-In', error);
             }
         };
 
@@ -1661,6 +1677,7 @@ const App = () => {
         }
 
         return () => {
+            clearTimeout(timeoutId);
             if (gapiScript) gapiScript.removeEventListener('load', handleGapiLoad);
             if (gisScript) gisScript.removeEventListener('load', handleGisLoad);
         };
