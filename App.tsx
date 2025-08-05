@@ -84,6 +84,21 @@ export const useSettings = () => {
 };
 
 // --- Helper Functions ---
+const loadScript = (src: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+            resolve();
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        document.body.appendChild(script);
+    });
+};
+
 const isChinesePunctuation = (char: string) => CHINESE_PUNCTUATION_REGEX.test(char.trim());
 const escapeRegex = (string: string) => string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 
@@ -1571,71 +1586,50 @@ const App = () => {
         } catch (e) { console.error("Failed to load data from localStorage", e); }
         
         // --- Google API Initialization ---
-        const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID;
-        const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
+        const initGoogleApis = async () => {
+            const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID;
+            const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
 
-        if (!GOOGLE_CLIENT_ID) {
-            setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: Biến môi trường VITE_GOOGLE_CLIENT_ID chưa được thiết lập.' });
-            return;
-        }
-        if (!GOOGLE_API_KEY) {
-            setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: Biến môi trường VITE_API_KEY (dùng cho Google Drive) chưa được thiết lập.' });
-            return;
-        }
-
-        const timeoutId = setTimeout(() => {
-            setGoogleApiStatus(prevStatus => {
-                if (prevStatus.status === 'pending') {
-                    return { status: 'error', message: 'Quá thời gian khởi tạo dịch vụ Google. Vui lòng kiểm tra kết nối mạng hoặc thử tải lại trang.' };
-                }
-                return prevStatus;
-            });
-        }, 15000);
-
-        let gapiLoaded = false;
-        let gisLoaded = false;
-
-        const checkCompletion = () => {
-            if (gapiLoaded && gisLoaded) {
-                clearTimeout(timeoutId);
-                setGoogleApiStatus({ status: 'ready', message: 'Dịch vụ Google đã sẵn sàng.' });
+            if (!GOOGLE_CLIENT_ID) {
+                setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: VITE_GOOGLE_CLIENT_ID chưa được thiết lập.' });
+                return;
             }
-        };
+            if (!GOOGLE_API_KEY) {
+                setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: VITE_API_KEY (dùng cho Google Drive) chưa được thiết lập.' });
+                return;
+            }
 
-        const handleError = (service: string, error: any) => {
-            clearTimeout(timeoutId);
-            console.error(`${service} initialization error:`, error);
-            const message = error instanceof Error ? error.message : String(error);
-            setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo ${service}: ${message}` });
-        };
-
-
-        const handleGapiLoad = () => {
-             if (!window.gapi) return;
-            window.gapi.load('client', async () => {
-                try {
-                    await window.gapi.client.init({
-                        apiKey: GOOGLE_API_KEY,
-                        discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-                    });
-                    gapiLoaded = true;
-                    checkCompletion();
-                } catch(error: any) {
-                    handleError('GAPI', error);
-                }
-            });
-        };
-        
-        const handleGisLoad = () => {
-            if (!window.google) return;
             try {
+                // Dynamically load both Google API scripts in parallel
+                await Promise.all([
+                    loadScript('https://apis.google.com/js/api.js'),
+                    loadScript('https://accounts.google.com/gsi/client'),
+                ]);
+
+                // Both scripts are loaded, now initialize them
+                // 1. Initialize GAPI client for Drive
+                await new Promise<void>((resolve, reject) => {
+                    window.gapi.load('client', async () => {
+                        try {
+                            await window.gapi.client.init({
+                                apiKey: GOOGLE_API_KEY,
+                                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+                            });
+                            resolve();
+                        } catch (err) {
+                            reject(err);
+                        }
+                    });
+                });
+                
+                // 2. Initialize GIS client for Auth
                 const client = window.google.accounts.oauth2.initTokenClient({
                     client_id: GOOGLE_CLIENT_ID,
                     scope: DRIVE_SCOPES,
                     callback: async (tokenResponse: any) => {
-                        if(tokenResponse.error) {
+                        if (tokenResponse.error) {
                             console.error("Google Auth Error:", tokenResponse);
-                            setError({message: `Lỗi đăng nhập Google: ${tokenResponse.error_description || tokenResponse.error}`});
+                            setError({ message: `Lỗi đăng nhập Google: ${tokenResponse.error_description || tokenResponse.error}` });
                             return;
                         }
                         setIsLoggedIn(true);
@@ -1643,44 +1637,29 @@ const App = () => {
                             const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
                                 headers: { 'Authorization': `Bearer ${tokenResponse.access_token}` }
                             });
-                            if (!response.ok) {
-                                throw new Error(`Failed to fetch profile: ${response.statusText}`);
-                            }
+                            if (!response.ok) throw new Error(`Failed to fetch profile: ${response.statusText}`);
                             const profile = await response.json();
                             setGoogleUser(profile);
                         } catch (err) {
                             console.error("Failed to fetch user profile", err);
-                             setError({message: `Không thể lấy thông tin người dùng: ${err instanceof Error ? err.message : String(err)}`})
+                            setError({ message: `Không thể lấy thông tin người dùng: ${err instanceof Error ? err.message : String(err)}` });
                         }
                     },
                 });
                 setTokenClient(client);
-                gisLoaded = true;
-                checkCompletion();
-            } catch (error: any) {
-                handleError('Google Sign-In', error);
+
+                // Everything is ready
+                setGoogleApiStatus({ status: 'ready', message: 'Dịch vụ Google đã sẵn sàng.' });
+
+            } catch (error) {
+                console.error("Google API initialization failed:", error);
+                const message = error instanceof Error ? error.message : "Lỗi không xác định";
+                setGoogleApiStatus({ status: 'error', message: `Không thể khởi tạo dịch vụ Google: ${message}` });
             }
         };
 
-        const gapiScript = document.querySelector<HTMLScriptElement>('script[src="https://apis.google.com/js/api.js"]');
-        if (window.gapi?.client) {
-            handleGapiLoad();
-        } else if (gapiScript) {
-            gapiScript.addEventListener('load', handleGapiLoad);
-        }
+        initGoogleApis();
 
-        const gisScript = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
-        if (window.google?.accounts) {
-             handleGisLoad();
-        } else if (gisScript) {
-            gisScript.addEventListener('load', handleGisLoad);
-        }
-
-        return () => {
-            clearTimeout(timeoutId);
-            if (gapiScript) gapiScript.removeEventListener('load', handleGapiLoad);
-            if (gisScript) gisScript.removeEventListener('load', handleGisLoad);
-        };
     }, []);
 
     useEffect(() => { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); }, [settings]);
