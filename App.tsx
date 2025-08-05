@@ -34,9 +34,14 @@ const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
 const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5'; // version bump for new structure
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;
 
-const GOOGLE_CLIENT_ID = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID) || '';
-const GOOGLE_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) || ''; // Base key for GAPI init
 const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
+
+// --- Types ---
+type GoogleApiStatus = {
+  status: 'pending' | 'ready' | 'error';
+  message: string;
+};
+
 
 // --- Theme & Settings ---
 const getThemeClasses = (theme: Theme) => {
@@ -1396,12 +1401,12 @@ const DataManagementModal: React.FC<{
     onExport: () => void;
     onImport: (event: React.ChangeEvent<HTMLInputElement>) => void;
     onClear: (dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => void;
-    isGoogleReady: boolean;
+    googleApiStatus: GoogleApiStatus;
     isLoggedIn: boolean;
     onSaveToDrive: () => void;
     onLoadFromDrive: () => void;
     onLogin: () => void;
-}> = ({ isOpen, onClose, onExport, onImport, onClear, isGoogleReady, isLoggedIn, onSaveToDrive, onLoadFromDrive, onLogin }) => {
+}> = ({ isOpen, onClose, onExport, onImport, onClear, googleApiStatus, isLoggedIn, onSaveToDrive, onLoadFromDrive, onLogin }) => {
     const { theme } = useSettings();
     const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -1445,8 +1450,8 @@ const DataManagementModal: React.FC<{
                                     Lưu hoặc tải dữ liệu của bạn từ Google Drive. Dữ liệu sẽ được lưu vào một tệp riêng tư mà chỉ ứng dụng này có thể truy cập.
                                 </p>
                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button onClick={onSaveToDrive} disabled={!isGoogleReady} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Lưu vào Drive</button>
-                                    <button onClick={onLoadFromDrive} disabled={!isGoogleReady} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Tải từ Drive</button>
+                                    <button onClick={onSaveToDrive} disabled={googleApiStatus.status !== 'ready'} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Lưu vào Drive</button>
+                                    <button onClick={onLoadFromDrive} disabled={googleApiStatus.status !== 'ready'} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Tải từ Drive</button>
                                 </div>
                             </>
                         ) : (
@@ -1456,15 +1461,15 @@ const DataManagementModal: React.FC<{
                                 </p>
                                 <button 
                                     onClick={onLogin} 
-                                    disabled={!isGoogleReady} 
+                                    disabled={googleApiStatus.status !== 'ready'} 
                                     className={`w-full flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}
                                 >
                                     <GoogleIcon className="w-5 h-5 mr-2" />
                                     Đăng nhập với Google
                                 </button>
-                                {!isGoogleReady && (
-                                    <p className={`text-xs text-center ${theme.mutedText} mt-2`}>
-                                        Để sử dụng, bạn cần cấu hình Client ID. Tính năng hoạt động tốt nhất khi ứng dụng được triển khai bên ngoài môi trường này.
+                                {googleApiStatus.status !== 'ready' && (
+                                    <p className={`text-xs text-center ${googleApiStatus.status === 'error' ? 'text-red-500' : theme.mutedText} mt-2`}>
+                                        {googleApiStatus.message}
                                     </p>
                                 )}
                             </>
@@ -1536,9 +1541,8 @@ const App = () => {
     const [scrollTo, setScrollTo] = useState<{ chapterIndex: number; sentenceNumber: number } | null>(null);
 
     // Google Auth State
-    const [googleAuthReady, setGoogleAuthReady] = useState(false);
+    const [googleApiStatus, setGoogleApiStatus] = useState<GoogleApiStatus>({ status: 'pending', message: 'Đang khởi tạo dịch vụ Google...' });
     const [tokenClient, setTokenClient] = useState<any>(null);
-    const [gapiReady, setGapiReady] = useState(false);
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [googleUser, setGoogleUser] = useState<any>(null);
 
@@ -1566,32 +1570,47 @@ const App = () => {
             if (storedVocabulary) setVocabulary(JSON.parse(storedVocabulary));
         } catch (e) { console.error("Failed to load data from localStorage", e); }
         
-        // --- Google API Initialization (Robust) ---
+        // --- Google API Initialization ---
+        const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID;
+        const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
+
+        if (!GOOGLE_CLIENT_ID) {
+            setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: Biến môi trường VITE_GOOGLE_CLIENT_ID chưa được thiết lập.' });
+            return;
+        }
+        if (!GOOGLE_API_KEY) {
+            setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: Biến môi trường VITE_API_KEY (dùng cho Google Drive) chưa được thiết lập.' });
+            return;
+        }
+
+        let gapiLoaded = false;
+        let gisLoaded = false;
+
+        const checkCompletion = () => {
+            if (gapiLoaded && gisLoaded) {
+                setGoogleApiStatus({ status: 'ready', message: 'Dịch vụ Google đã sẵn sàng.' });
+            }
+        };
+
         const handleGapiLoad = () => {
-            if (!window.gapi) return;
+             if (!window.gapi) return;
             window.gapi.load('client', async () => {
-                if (!GOOGLE_API_KEY) {
-                    console.warn("Google API Key (VITE_API_KEY) is missing, GAPI client cannot be initialized.");
-                    return;
-                }
                 try {
                     await window.gapi.client.init({
                         apiKey: GOOGLE_API_KEY,
                         discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
                     });
-                    setGapiReady(true);
-                } catch(error) {
+                    gapiLoaded = true;
+                    checkCompletion();
+                } catch(error: any) {
                     console.error("GAPI client initialization error:", error);
+                    setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo GAPI: ${error.message || 'Unknown error'}` });
                 }
             });
         };
         
         const handleGisLoad = () => {
             if (!window.google) return;
-            if (!GOOGLE_CLIENT_ID) {
-                console.warn("Google Client ID (VITE_GOOGLE_CLIENT_ID) is missing, Google Sign-In cannot be initialized.");
-                return;
-            }
             try {
                 const client = window.google.accounts.oauth2.initTokenClient({
                     client_id: GOOGLE_CLIENT_ID,
@@ -1619,9 +1638,11 @@ const App = () => {
                     },
                 });
                 setTokenClient(client);
-                setGoogleAuthReady(true);
-            } catch (error) {
+                gisLoaded = true;
+                checkCompletion();
+            } catch (error: any) {
                 console.error("GIS client initialization error:", error);
+                setGoogleApiStatus({ status: 'error', message: `Lỗi khởi tạo Google Sign-In: ${error.message || 'Unknown error'}` });
             }
         };
 
@@ -2286,7 +2307,7 @@ const App = () => {
                     onExport={handleExportData}
                     onImport={handleImportData}
                     onClear={handleClearData}
-                    isGoogleReady={googleAuthReady && gapiReady}
+                    googleApiStatus={googleApiStatus}
                     isLoggedIn={isLoggedIn}
                     onSaveToDrive={handleSaveToDrive}
                     onLoadFromDrive={handleLoadFromDrive}
