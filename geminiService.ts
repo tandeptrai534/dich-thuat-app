@@ -4,10 +4,10 @@ import type { AnalyzedText } from './types';
 
 // Initialize the GoogleGenAI client once using the API key from environment variables.
 // This is a security best practice and improves performance.
-const apiKey = process.env.API_KEY;
+const apiKey = import.meta.env.VITE_API_KEY;
 if (!apiKey) {
     // This provides a clear error message to the developer if the API key is missing.
-    throw new Error("API_KEY environment variable not set. Please ensure it is configured in your deployment environment.");
+    throw new Error("VITE_API_KEY environment variable not set. Please ensure it is configured in your deployment environment.");
 }
 const ai = new GoogleGenAI({ apiKey });
 

@@ -1,14 +1,26 @@
+
+
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
+import * as driveService from './services/googleDriveService';
 import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, SpecialTerm, DisplayMode } from './types';
 import { InputArea } from './components/InputArea';
-import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon } from './components/common/icons';
+import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon, BookmarkSquareIcon, DownloadIcon, TrashIcon, UploadIcon, GoogleIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { OutputDisplay } from './components/OutputDisplay';
 import { GRAMMAR_COLOR_MAP } from './constants';
 import { GrammarRole } from './types';
+
+
+// Add global declarations for Google APIs
+declare global {
+    interface Window {
+        gapi: any;
+        google: any;
+    }
+}
 
 
 // --- Constants ---
@@ -21,6 +33,10 @@ const ANALYSIS_CACHE_STORAGE_KEY = 'chinese_analyzer_analysis_cache';
 const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
 const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5'; // version bump for new structure
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;
+
+const GOOGLE_CLIENT_ID = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID) || '';
+const GOOGLE_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) || ''; // Base key for GAPI init
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
 // --- Theme & Settings ---
 const getThemeClasses = (theme: Theme) => {
@@ -605,13 +621,15 @@ const ChapterDisplay: React.FC<{
     onUpdate: (update: Partial<ChapterData>) => void;
     isApiBusy: boolean;
 }> = ({ chapter, chapterIndex, onSentenceClick, onTranslate, onStopTranslate, onAnalyze, onStopAnalyze, onUpdate, isApiBusy }) => {
-    const { theme } = useSettings();
+    const { theme, settings } = useSettings();
     
     const untranslatedSentences = chapter.sentences.filter(s => !s.isTitle && s.translationState === 'pending').length;
     const unanalyzedSentences = chapter.sentences.filter(s => s.analysisState === 'pending').length;
 
     const allSentencesTranslated = untranslatedSentences === 0;
     const allSentencesAnalyzed = unanalyzedSentences === 0;
+    const isApiKeyMissing = !settings.apiKey;
+
 
     const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
         onUpdate({ isExpanded: e.currentTarget.open });
@@ -649,14 +667,14 @@ const ChapterDisplay: React.FC<{
         }
         if (!allSentencesTranslated) {
             return (
-                <button onClick={(e) => { e.preventDefault(); onTranslate(); }} disabled={isApiBusy} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>
+                <button onClick={(e) => { e.preventDefault(); onTranslate(); }} disabled={isApiBusy || isApiKeyMissing} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`} title={isApiKeyMissing ? "Vui lòng nhập API Key trong Cài đặt" : ""}>
                     <PlayIcon className="w-4 h-4" /> Dịch chương
                 </button>
             );
         }
         if (!allSentencesAnalyzed) {
             return (
-                <button onClick={(e) => { e.preventDefault(); onAnalyze(); }} disabled={isApiBusy} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>
+                <button onClick={(e) => { e.preventDefault(); onAnalyze(); }} disabled={isApiBusy || isApiKeyMissing} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`} title={isApiKeyMissing ? "Vui lòng nhập API Key trong Cài đặt" : ""}>
                     <DocumentTextIcon className="w-4 h-4" /> Phân tích chương
                 </button>
             );
@@ -1023,17 +1041,16 @@ const SettingsPanel: React.FC<{
                 className={`fixed bottom-16 right-4 ${theme.cardBg} ${theme.border} border p-4 rounded-xl shadow-2xl w-80 space-y-4`}
                 onClick={e => e.stopPropagation()}
             >
-                 <div>
+                <div>
                     <h3 className={`text-sm font-semibold mb-2 ${theme.mutedText}`}>Gemini API Key</h3>
                     <input
                         type="password"
-                        placeholder="Nhập API Key của bạn..."
                         value={localSettings.apiKey}
-                        onChange={(e) => setLocalSettings(s => ({...s, apiKey: e.target.value}))}
+                        onChange={(e) => setLocalSettings(s => ({ ...s, apiKey: e.target.value }))}
+                        placeholder="Nhập API key của bạn..."
                         className={`w-full p-2 border ${theme.border} rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.cardBg} ${theme.text}`}
                     />
-                 </div>
-
+                </div>
                  <div className="grid grid-cols-2 gap-4">
                      <NumberInputWithControls
                         label="Cỡ chữ (px)"
@@ -1373,6 +1390,126 @@ const CacheLibraryModal: React.FC<{
     );
 };
 
+const DataManagementModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    onExport: () => void;
+    onImport: (event: React.ChangeEvent<HTMLInputElement>) => void;
+    onClear: (dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => void;
+    isGoogleReady: boolean;
+    isLoggedIn: boolean;
+    onSaveToDrive: () => void;
+    onLoadFromDrive: () => void;
+    onLogin: () => void;
+}> = ({ isOpen, onClose, onExport, onImport, onClear, isGoogleReady, isLoggedIn, onSaveToDrive, onLoadFromDrive, onLogin }) => {
+    const { theme } = useSettings();
+    const importInputRef = useRef<HTMLInputElement>(null);
+
+    if (!isOpen) return null;
+
+    const handleImportClick = () => {
+        importInputRef.current?.click();
+    };
+    
+    const handleClearClick = (type: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => {
+        const messages = {
+            vocabulary: "Bạn có chắc chắn muốn xóa toàn bộ từ điển cá nhân không? Hành động này không thể hoàn tác.",
+            analysisCache: "Bạn có chắc chắn muốn xóa toàn bộ cache phân tích không?",
+            translationCache: "Bạn có chắc chắn muốn xóa toàn bộ cache dịch không?",
+            settings: "Bạn có chắc chắn muốn đặt lại cài đặt giao diện về mặc định không?",
+            all: "BẠN CÓ CHẮC CHẮN MUỐN XÓA TẤT CẢ DỮ LIỆU ỨNG DỤNG KHÔNG? Bao gồm từ điển, cache và cài đặt. Hành động này không thể hoàn tác.",
+        };
+        if (window.confirm(messages[type])) {
+            onClear(type);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={onClose}>
+            <div
+                className={`w-full max-w-lg max-h-[90vh] flex flex-col ${theme.cardBg} rounded-xl shadow-2xl border ${theme.border}`}
+                onClick={e => e.stopPropagation()}
+            >
+                <header className={`p-4 border-b ${theme.border} flex-shrink-0 flex justify-between items-center`}>
+                    <h2 className={`text-xl font-bold ${theme.text}`}>Quản lý dữ liệu</h2>
+                    <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
+                        <CloseIcon className="w-6 h-6" />
+                    </button>
+                </header>
+                <div className="p-6 space-y-6 overflow-y-auto">
+                    <section className="space-y-3">
+                        <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><GoogleIcon className="w-5 h-5" />Google Drive</h3>
+                        {isLoggedIn ? (
+                            <>
+                                <p className={`text-sm ${theme.mutedText}`}>
+                                    Lưu hoặc tải dữ liệu của bạn từ Google Drive. Dữ liệu sẽ được lưu vào một tệp riêng tư mà chỉ ứng dụng này có thể truy cập.
+                                </p>
+                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button onClick={onSaveToDrive} disabled={!isGoogleReady} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Lưu vào Drive</button>
+                                    <button onClick={onLoadFromDrive} disabled={!isGoogleReady} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Tải từ Drive</button>
+                                </div>
+                            </>
+                        ) : (
+                             <>
+                                <p className={`text-sm ${theme.mutedText}`}>
+                                    Đăng nhập bằng tài khoản Google của bạn để bật tính năng sao lưu và khôi phục trên Drive.
+                                </p>
+                                <button 
+                                    onClick={onLogin} 
+                                    disabled={!isGoogleReady} 
+                                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}
+                                >
+                                    <GoogleIcon className="w-5 h-5 mr-2" />
+                                    Đăng nhập với Google
+                                </button>
+                                {!isGoogleReady && (
+                                    <p className={`text-xs text-center ${theme.mutedText} mt-2`}>
+                                        Để sử dụng, bạn cần cấu hình Client ID. Tính năng hoạt động tốt nhất khi ứng dụng được triển khai bên ngoài môi trường này.
+                                    </p>
+                                )}
+                            </>
+                        )}
+                    </section>
+
+                    <div className={`border-t ${theme.border}`}></div>
+
+                    <section className="space-y-3">
+                        <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><DownloadIcon className="w-5 h-5"/>Sao lưu cục bộ (Tệp)</h3>
+                        <p className={`text-sm ${theme.mutedText}`}>Lưu toàn bộ dữ liệu hiện tại của bạn vào một tệp JSON trên máy tính. Giữ tệp này an toàn để khôi phục sau này.</p>
+                        <button onClick={onExport} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
+                            Tải xuống tệp sao lưu
+                        </button>
+                         <input
+                            type="file"
+                            ref={importInputRef}
+                            onChange={onImport}
+                            className="hidden"
+                            accept=".json"
+                        />
+                        <button onClick={handleImportClick} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
+                             <UploadIcon className="w-5 h-5"/> Tải lên từ tệp .json
+                        </button>
+                         <p className={`text-xs ${theme.mutedText}`}> <strong className="text-amber-600 dark:text-amber-400">Lưu ý:</strong> Tải lên sẽ ghi đè toàn bộ dữ liệu hiện tại.</p>
+                    </section>
+
+                    <div className={`border-t ${theme.border}`}></div>
+
+                    <section className="space-y-3">
+                        <h3 className={`text-lg font-semibold text-red-600 dark:text-red-400 flex items-center gap-2`}><TrashIcon className="w-5 h-5"/>Xóa dữ liệu</h3>
+                        <p className={`text-sm ${theme.mutedText}`}>Giải phóng dung lượng hoặc khắc phục sự cố bằng cách xóa dữ liệu được lưu trong trình duyệt. Hành động này không thể hoàn tác.</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <button onClick={() => handleClearClick('vocabulary')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa từ điển</button>
+                            <button onClick={() => handleClearClick('analysisCache')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa cache phân tích</button>
+                            <button onClick={() => handleClearClick('translationCache')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa cache dịch</button>
+                            <button onClick={() => handleClearClick('all')} className={`px-4 py-2 text-sm font-bold rounded-lg shadow-sm bg-red-600 text-white hover:bg-red-700 transition-colors`}>Xóa TẤT CẢ</button>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- Main App Component ---
 
 const App = () => {
@@ -1387,6 +1524,7 @@ const App = () => {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
     const [isCacheLibraryOpen, setIsCacheLibraryOpen] = useState(false);
+    const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
     
     const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
     const [activeFileId, setActiveFileId] = useState<number | null>(null);
@@ -1397,6 +1535,12 @@ const App = () => {
     const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
     const [scrollTo, setScrollTo] = useState<{ chapterIndex: number; sentenceNumber: number } | null>(null);
 
+    // Google Auth State
+    const [googleAuthReady, setGoogleAuthReady] = useState(false);
+    const [tokenClient, setTokenClient] = useState<any>(null);
+    const [gapiReady, setGapiReady] = useState(false);
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+    const [googleUser, setGoogleUser] = useState<any>(null);
 
     const [taskQueue, setTaskQueue] = useState<Array<{
         id: string,
@@ -1410,10 +1554,7 @@ const App = () => {
     useEffect(() => {
         try {
             const storedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            if (storedSettings) {
-                const parsedSettings = JSON.parse(storedSettings);
-                setSettings(prev => ({...prev, ...parsedSettings}));
-            }
+            if (storedSettings) setSettings(prev => ({...prev, ...JSON.parse(storedSettings)}));
             
             const storedAnalysisCache = localStorage.getItem(ANALYSIS_CACHE_STORAGE_KEY);
             if (storedAnalysisCache) setAnalysisCache(new Map(JSON.parse(storedAnalysisCache)));
@@ -1424,6 +1565,84 @@ const App = () => {
             const storedVocabulary = localStorage.getItem(VOCABULARY_STORAGE_KEY);
             if (storedVocabulary) setVocabulary(JSON.parse(storedVocabulary));
         } catch (e) { console.error("Failed to load data from localStorage", e); }
+        
+        // --- Google API Initialization (Robust) ---
+        const handleGapiLoad = () => {
+            if (!window.gapi) return;
+            window.gapi.load('client', async () => {
+                if (!GOOGLE_API_KEY) {
+                    console.warn("Google API Key (VITE_API_KEY) is missing, GAPI client cannot be initialized.");
+                    return;
+                }
+                try {
+                    await window.gapi.client.init({
+                        apiKey: GOOGLE_API_KEY,
+                        discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+                    });
+                    setGapiReady(true);
+                } catch(error) {
+                    console.error("GAPI client initialization error:", error);
+                }
+            });
+        };
+        
+        const handleGisLoad = () => {
+            if (!window.google) return;
+            if (!GOOGLE_CLIENT_ID) {
+                console.warn("Google Client ID (VITE_GOOGLE_CLIENT_ID) is missing, Google Sign-In cannot be initialized.");
+                return;
+            }
+            try {
+                const client = window.google.accounts.oauth2.initTokenClient({
+                    client_id: GOOGLE_CLIENT_ID,
+                    scope: DRIVE_SCOPES,
+                    callback: async (tokenResponse: any) => {
+                        if(tokenResponse.error) {
+                            console.error("Google Auth Error:", tokenResponse);
+                            setError({message: `Lỗi đăng nhập Google: ${tokenResponse.error_description || tokenResponse.error}`});
+                            return;
+                        }
+                        setIsLoggedIn(true);
+                        try {
+                            const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                                headers: { 'Authorization': `Bearer ${tokenResponse.access_token}` }
+                            });
+                            if (!response.ok) {
+                                throw new Error(`Failed to fetch profile: ${response.statusText}`);
+                            }
+                            const profile = await response.json();
+                            setGoogleUser(profile);
+                        } catch (err) {
+                            console.error("Failed to fetch user profile", err);
+                             setError({message: `Không thể lấy thông tin người dùng: ${err instanceof Error ? err.message : String(err)}`})
+                        }
+                    },
+                });
+                setTokenClient(client);
+                setGoogleAuthReady(true);
+            } catch (error) {
+                console.error("GIS client initialization error:", error);
+            }
+        };
+
+        const gapiScript = document.querySelector<HTMLScriptElement>('script[src="https://apis.google.com/js/api.js"]');
+        if (window.gapi?.client) {
+            handleGapiLoad();
+        } else if (gapiScript) {
+            gapiScript.addEventListener('load', handleGapiLoad);
+        }
+
+        const gisScript = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
+        if (window.google?.accounts) {
+             handleGisLoad();
+        } else if (gisScript) {
+            gisScript.addEventListener('load', handleGisLoad);
+        }
+
+        return () => {
+            if (gapiScript) gapiScript.removeEventListener('load', handleGapiLoad);
+            if (gisScript) gisScript.removeEventListener('load', handleGisLoad);
+        };
     }, []);
 
     useEffect(() => { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); }, [settings]);
@@ -1478,6 +1697,16 @@ const App = () => {
             setScrollTo(null);
         }
     }, [scrollTo, activeFileId, processedFiles]);
+    
+    const checkApiKey = useCallback(() => {
+        if (!settings.apiKey) {
+            alert("Vui lòng nhập Gemini API Key của bạn trong phần Cài đặt (biểu tượng bánh răng) trước.");
+            setIsSettingsOpen(true);
+            return false;
+        }
+        return true;
+    }, [settings.apiKey]);
+
 
     const handleProcessText = useCallback((text: string, fileName: string) => {
         if (!text.trim()) {
@@ -1610,6 +1839,8 @@ const App = () => {
             return;
         }
         
+        if (!checkApiKey()) return;
+        
         const analysisCacheKey = sentence.original;
         if (analysisCache.has(analysisCacheKey)) {
             const cachedResult = analysisCache.get(analysisCacheKey)!;
@@ -1644,11 +1875,11 @@ const App = () => {
             }
         };
         setTaskQueue(prev => [...prev, task]);
-    }, [activeFileId, processedFiles, analysisCache, handleSentencesUpdate, settings.apiKey, handleSaveVocabulary, vocabulary]);
+    }, [activeFileId, processedFiles, analysisCache, handleSentencesUpdate, handleSaveVocabulary, vocabulary, settings.apiKey, checkApiKey]);
     
     const handleTranslateChapter = useCallback((chapterIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file) return;
+        if (!file || !checkApiKey()) return;
 
         const task = {
             id: `translate-${file.id}-${chapterIndex}`,
@@ -1708,11 +1939,11 @@ const App = () => {
         };
 
         setTaskQueue(prev => [...prev, task]);
-    }, [activeFileId, processedFiles, settings.apiKey, handleChapterUpdate, handleSentencesUpdate, vocabulary]);
+    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate, vocabulary, settings.apiKey, checkApiKey]);
 
     const handleAnalyzeChapterSequentially = useCallback(async (chapterIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file) return;
+        if (!file || !checkApiKey()) return;
 
         const stopKey = `analyze-${file.id}-${chapterIndex}`;
         stopFlags.current.delete(stopKey);
@@ -1766,7 +1997,7 @@ const App = () => {
 
         handleChapterUpdate(chapterIndex, { isBatchAnalyzing: false });
 
-    }, [activeFileId, processedFiles, settings.apiKey, handleChapterUpdate, handleSentencesUpdate, analysisCache, handleSaveVocabulary, vocabulary]);
+    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate, analysisCache, handleSaveVocabulary, vocabulary, settings.apiKey, checkApiKey]);
 
     const stopProcess = useCallback((type: 'translate' | 'analyze', chapterIndex: number) => {
         const file = processedFiles.find(f => f.id === activeFileId);
@@ -1872,6 +2103,150 @@ const App = () => {
         
         setScrollTo({ chapterIndex, sentenceNumber });
     }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
+    
+    const packDataForExport = () => ({
+        version: '1.1',
+        createdAt: new Date().toISOString(),
+        data: {
+            settings,
+            vocabulary,
+            analysisCache: Array.from(analysisCache.entries()),
+            translationCache: Array.from(translationCache.entries()),
+        }
+    });
+    
+    const unpackAndLoadData = (data: any) => {
+        if (!data.version || !data.data) {
+            throw new Error("Tệp không hợp lệ hoặc sai định dạng.");
+        }
+        const { settings, vocabulary, analysisCache, translationCache } = data.data;
+        if (settings) setSettings(settings);
+        if (vocabulary) setVocabulary(vocabulary);
+        if (analysisCache) setAnalysisCache(new Map(analysisCache));
+        if (translationCache) setTranslationCache(new Map(translationCache));
+    };
+
+    const handleExportData = useCallback(() => {
+        try {
+            const dataToExport = packDataForExport();
+            const jsonString = JSON.stringify(dataToExport, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trinh-phan-tich-tieng-trung-backup-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            alert('Đã tải xuống tệp sao lưu thành công.');
+        } catch (err) {
+            console.error('Lỗi khi xuất dữ liệu:', err);
+            alert('Đã xảy ra lỗi khi tạo tệp sao lưu.');
+        }
+    }, [settings, vocabulary, analysisCache, translationCache]);
+
+    const handleImportData = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target?.result as string;
+                const parsedData = JSON.parse(text);
+                unpackAndLoadData(parsedData);
+                alert('Khôi phục dữ liệu thành công!');
+                setIsDataManagementOpen(false);
+            } catch (err: any) {
+                console.error('Lỗi khi nhập dữ liệu:', err);
+                alert(`Đã xảy ra lỗi khi đọc tệp: ${err.message}`);
+            } finally {
+                if (event.target) event.target.value = '';
+            }
+        };
+        reader.readAsText(file);
+    }, []);
+
+    const handleClearData = useCallback((dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => {
+        const clearVocabulary = () => setVocabulary([]);
+        const clearAnalysisCache = () => setAnalysisCache(new Map());
+        const clearTranslationCache = () => setTranslationCache(new Map());
+        const resetSettings = () => setSettings({
+            apiKey: '',
+            fontSize: 16,
+            hanziFontSize: 24,
+            fontFamily: 'font-sans',
+            theme: 'light',
+            lineHeight: 1.6,
+        });
+
+        switch(dataType) {
+            case 'vocabulary': clearVocabulary(); break;
+            case 'analysisCache': clearAnalysisCache(); break;
+            case 'translationCache': clearTranslationCache(); break;
+            case 'settings': resetSettings(); break;
+            case 'all':
+                clearVocabulary();
+                clearAnalysisCache();
+                clearTranslationCache();
+                resetSettings();
+                break;
+        }
+        alert(`Đã xóa "${dataType}" thành công.`);
+    }, []);
+
+    const handleAuthClick = () => {
+        if (tokenClient) {
+            tokenClient.requestAccessToken({ prompt: '' });
+        }
+    };
+
+    const handleSignoutClick = () => {
+        const cred = window.gapi.client.getToken();
+        if (cred) {
+            window.google.accounts.oauth2.revoke(cred.access_token, () => {});
+            window.gapi.client.setToken(null);
+            setIsLoggedIn(false);
+            setGoogleUser(null);
+        }
+    };
+    
+    const handleSaveToDrive = async () => {
+        try {
+            setIsLoading(true);
+            const dataToSave = packDataForExport();
+            await driveService.saveDataToDrive(dataToSave);
+            alert('Đã lưu dữ liệu vào Google Drive thành công!');
+        } catch (err: any) {
+            setError({ message: `Lỗi khi lưu vào Google Drive: ${err.message}`});
+        } finally {
+            setIsLoading(false);
+            setIsDataManagementOpen(false);
+        }
+    };
+    
+    const handleLoadFromDrive = async () => {
+        if (!window.confirm("Tải dữ liệu từ Google Drive sẽ ghi đè lên tất cả dữ liệu hiện tại của bạn. Bạn có muốn tiếp tục không?")) {
+            return;
+        }
+        try {
+            setIsLoading(true);
+            const loadedData = await driveService.loadDataFromDrive();
+            if (loadedData) {
+                unpackAndLoadData(loadedData);
+                alert('Đã tải dữ liệu từ Google Drive thành công!');
+            } else {
+                 alert('Không tìm thấy tệp dữ liệu nào trong Google Drive. Hãy lưu dữ liệu trước.');
+            }
+        } catch (err: any) {
+            setError({ message: `Lỗi khi tải từ Google Drive: ${err.message}`});
+        } finally {
+            setIsLoading(false);
+            setIsDataManagementOpen(false);
+        }
+    };
+
 
     const handleAddNewFile = useCallback(() => { setActiveFileId(null); setError(null); }, []);
     const handleDeleteAnalysisCacheItem = useCallback((key: string) => { setAnalysisCache(prev => { const n = new Map(prev); n.delete(key); return n; }); }, []);
@@ -1905,20 +2280,41 @@ const App = () => {
                     onDeleteTranslation={handleDeleteTranslationCacheItem}
                 />
                 <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+                <DataManagementModal
+                    isOpen={isDataManagementOpen}
+                    onClose={() => setIsDataManagementOpen(false)}
+                    onExport={handleExportData}
+                    onImport={handleImportData}
+                    onClear={handleClearData}
+                    isGoogleReady={googleAuthReady && gapiReady}
+                    isLoggedIn={isLoggedIn}
+                    onSaveToDrive={handleSaveToDrive}
+                    onLoadFromDrive={handleLoadFromDrive}
+                    onLogin={handleAuthClick}
+                />
 
                 <header className={`${themeClasses.cardBg}/80 backdrop-blur-lg border-b ${themeClasses.border} sticky top-0 z-20`}>
                     <div className="container mx-auto px-4 py-3 flex justify-between items-center">
                         <h1 className="text-xl md:text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-cyan-500">
                             Trình Phân Tích Tiếng Trung
                         </h1>
-                         <div className="flex items-center gap-4">
+                         <div className="flex items-center gap-2 md:gap-4">
                               <button onClick={() => setIsVocabularyOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở từ điển">
                                 <BookOpenIcon className="w-6 h-6" />
                             </button>
                              <button onClick={() => setIsCacheLibraryOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở thư viện cache">
                                 <ArchiveBoxIcon className="w-6 h-6" />
                             </button>
-                             <a href="https://github.com/google/genai-js" target="_blank" rel="noopener noreferrer" className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`}>
+                            <button onClick={() => setIsDataManagementOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Quản lý Dữ liệu (Sao lưu/Khôi phục)">
+                                <BookmarkSquareIcon className="w-6 h-6" />
+                            </button>
+                             { isLoggedIn && googleUser && (
+                                <div className="flex items-center gap-2">
+                                    <img src={googleUser.picture} alt="avatar" className="w-7 h-7 rounded-full" />
+                                    <button onClick={handleSignoutClick} className={`text-xs ${themeClasses.mutedText} hover:${themeClasses.text}`}>Đăng xuất</button>
+                                </div>
+                            )}
+                             <a href="https://github.com/google/genai-js" target="_blank" rel="noopener noreferrer" className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors hidden md:block`}>
                                 <GithubIcon className="w-6 h-6" />
                             </a>
                         </div>

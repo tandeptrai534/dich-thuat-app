@@ -1,13 +1,21 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import type { AnalyzedText, VocabularyItem } from '../types';
 
-const getAiClient = (apiKey: string) => {
+
+let ai: GoogleGenAI | null = null;
+let currentApiKey: string | null = null;
+
+const getAiClient = (apiKey: string): GoogleGenAI => {
     if (!apiKey) {
-        // This error is for the developer/user to see if the key is missing in the app.
-        throw new Error("Vui lòng cung cấp khóa API Gemini trong bảng Cài đặt.");
+        throw new Error("API Key is missing. Please provide it in the settings.");
     }
-    return new GoogleGenAI({ apiKey });
+    if (ai === null || currentApiKey !== apiKey) {
+        ai = new GoogleGenAI({ apiKey });
+        currentApiKey = apiKey;
+    }
+    return ai;
 };
+
 
 const analysisSystemInstruction = `You are an expert linguist and translator specializing in Chinese and Vietnamese. Your task is to perform a detailed grammatical analysis and translation of a single Chinese sentence.
 
@@ -21,7 +29,7 @@ You MUST return the output as a single, valid JSON object that conforms to the p
     -   \`pinyin\`: The correct Pinyin transcription.
     -   \`sinoVietnamese\`: The Sino-Vietnamese (Hán Việt) reading.
     -   \`vietnameseMeaning\`: A concise Vietnamese meaning of the token.
-    -   \`grammarRole\`: The grammatical function (Subject, Predicate, Object, etc.). Use "Unknown" if unclear.
+    -   \`grammarRole\`: The grammatical function (Subject, Predicate, Object, etc.).Use "Unknown" if unclear.
     -   \`grammarExplanation\`: A brief explanation of the token's role and meaning in the context of the sentence. **This explanation MUST be in VIETNAMESE.**
 3.  **Special Term Identification:**
     -   Scan the sentence for multi-word proper nouns, idioms, or proverbs.
@@ -135,11 +143,11 @@ const buildPromptWithForcedTerms = (basePrompt: string, forcedSinoTerms: { term:
 };
 
 export const analyzeSentence = async (sentence: string, apiKey: string, forcedSinoTerms: { term: string; sinoVietnamese: string }[] = []): Promise<AnalyzedText> => {
-    const ai = getAiClient(apiKey);
+    const client = getAiClient(apiKey);
     const prompt = buildPromptWithForcedTerms(`Please analyze and translate this sentence: "${sentence}"`, forcedSinoTerms);
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await client.models.generateContent({
             model: "gemini-2.5-flash",
             contents: prompt,
             config: {
@@ -176,12 +184,12 @@ export const translateSentencesInBatch = async (sentences: string[], apiKey: str
     if (sentences.length === 0) {
         return [];
     }
-    const ai = getAiClient(apiKey);
     
+    const client = getAiClient(apiKey);
     const prompt = buildPromptWithForcedTerms(`Please translate this batch of sentences: ${JSON.stringify(sentences)}`, forcedSinoTerms);
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await client.models.generateContent({
             model: "gemini-2.5-flash",
             contents: prompt,
             config: {
