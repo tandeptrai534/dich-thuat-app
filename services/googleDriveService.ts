@@ -1,9 +1,7 @@
-
 // A service to interact with the Google Drive API.
 // Handles finding the app's data file, creating it if it doesn't exist,
 // and updating/reading its content.
 
-const FILE_NAME = 'trinh-phan-tich-data.json';
 const FOLDER_NAME = 'Trình Phân Tích Tiếng Trung AppData';
 
 /**
@@ -36,11 +34,12 @@ async function getOrCreateAppFolderId(): Promise<string> {
 
 
 /**
- * Finds the ID of the app's data file within the app's folder.
+ * Finds the ID of a file by its name within the app's folder.
  * @param {string} folderId The ID of the app's folder.
+ * @param {string} fileName The name of the file to find.
  * @returns {Promise<string|null>} The ID of the file, or null if not found.
  */
-async function findFileId(folderId: string, fileName: string = FILE_NAME): Promise<string | null> {
+async function findFileIdByName(folderId: string, fileName: string): Promise<string | null> {
     try {
         const response = await window.gapi.client.drive.files.list({
             q: `'${folderId}' in parents and name='${fileName}' and trashed=false`,
@@ -53,29 +52,30 @@ async function findFileId(folderId: string, fileName: string = FILE_NAME): Promi
         }
         return null;
     } catch (error) {
-        console.error("Error finding file in Drive:", error);
-        throw new Error("Không thể tìm thấy tệp trong Google Drive.");
+        console.error(`Error finding file '${fileName}' in Drive:`, error);
+        throw new Error(`Không thể tìm thấy tệp '${fileName}' trong Google Drive.`);
     }
 }
 
 /**
- * Saves the application data to a file in Google Drive.
+ * Saves a JSON object to a specified file in the app's Drive folder.
  * Creates the file if it doesn't exist, otherwise updates it.
- * @param {any} data The application data to save.
+ * @param {string} fileName The name of the file (e.g., 'data.json' or 'fileId.cache.json').
+ * @param {any} data The JSON-serializable data to save.
  */
-export async function saveDataToDrive(data: any): Promise<void> {
+export async function saveJsonFileInAppFolder(fileName: string, data: any): Promise<void> {
     const content = JSON.stringify(data);
     const blob = new Blob([content], { type: 'application/json' });
     
     const folderId = await getOrCreateAppFolderId();
-    const fileId = await findFileId(folderId);
+    const fileId = await findFileIdByName(folderId, fileName);
 
     const fileMetadata: {
         name: string;
         mimeType: string;
         parents?: string[];
     } = {
-        name: FILE_NAME,
+        name: fileName,
         mimeType: 'application/json',
     };
     
@@ -83,8 +83,7 @@ export async function saveDataToDrive(data: any): Promise<void> {
 
     if (fileId) {
         // File exists, update it
-        const metadataBlob = new Blob([JSON.stringify({})], { type: 'application/json' });
-        form.append('metadata', metadataBlob);
+        form.append('metadata', new Blob([JSON.stringify({})], { type: 'application/json' }));
         form.append('file', blob);
         
         await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`, {
@@ -96,8 +95,7 @@ export async function saveDataToDrive(data: any): Promise<void> {
     } else {
         // File does not exist, create it
         fileMetadata.parents = [folderId];
-        const metadataBlob = new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' });
-        form.append('metadata', metadataBlob);
+        form.append('metadata', new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' }));
         form.append('file', blob);
 
          await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
@@ -109,12 +107,13 @@ export async function saveDataToDrive(data: any): Promise<void> {
 }
 
 /**
- * Loads the application data from the file in Google Drive.
- * @returns {Promise<any|null>} The parsed application data, or null if the file doesn't exist.
+ * Loads and parses a JSON file from the app's Drive folder.
+ * @param {string} fileName The name of the file to load.
+ * @returns {Promise<any|null>} The parsed JSON data, or null if the file doesn't exist.
  */
-export async function loadDataFromDrive(): Promise<any | null> {
+export async function loadJsonFileFromAppFolder(fileName: string): Promise<any | null> {
     const folderId = await getOrCreateAppFolderId();
-    const fileId = await findFileId(folderId);
+    const fileId = await findFileIdByName(folderId, fileName);
 
     if (!fileId) {
         return null; // File doesn't exist yet
@@ -127,10 +126,32 @@ export async function loadDataFromDrive(): Promise<any | null> {
         });
         return response.result;
     } catch (error) {
-        console.error("Error loading data from Drive:", error);
-        throw new Error("Không thể tải dữ liệu từ Google Drive.");
+        console.error(`Error loading file '${fileName}' from Drive:`, error);
+        throw new Error(`Không thể tải dữ liệu cho tệp '${fileName}' từ Google Drive.`);
     }
 }
+
+/**
+ * Deletes a file from the app's Drive folder by its name.
+ * @param {string} fileName The name of the file to delete.
+ * @returns {Promise<void>}
+ */
+export async function deleteJsonFileInAppFolder(fileName: string): Promise<void> {
+    const folderId = await getOrCreateAppFolderId();
+    const fileId = await findFileIdByName(folderId, fileName);
+
+    if (fileId) {
+        try {
+            await window.gapi.client.drive.files.delete({
+                fileId: fileId
+            });
+        } catch (error) {
+            console.error(`Error deleting file '${fileName}' from Drive:`, error);
+            // Don't throw, as it might not be critical if a cache file fails to delete
+        }
+    }
+}
+
 
 /**
  * Fetches the text content of a file from Google Drive.
@@ -208,7 +229,7 @@ export async function createFileInDrive(fileName: string, content: string): Prom
 
 
 /**
- * Deletes a file from Google Drive permanently.
+ * Deletes a file from Google Drive permanently by its ID.
  * @param {string} fileId The ID of the file to delete.
  * @returns {Promise<void>}
  */

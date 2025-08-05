@@ -28,6 +28,7 @@ const DEFAULT_CHAPTER_TITLE = 'Văn bản chính';
 const MAX_CHAPTER_LENGTH = 5000;
 const PAGE_SIZE = 10;
 const TRANSLATION_BATCH_SIZE = 10;
+const DRIVE_DATA_FILE_NAME = 'trinh-phan-tich-data.json';
 const SETTINGS_STORAGE_KEY = 'chinese_analyzer_settings_v3';
 const ANALYSIS_CACHE_STORAGE_KEY = 'chinese_analyzer_analysis_cache';
 const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
@@ -43,7 +44,10 @@ type GoogleApiStatus = {
   message: string;
 };
 
+// Represents the data structure for a single file's cache.
+// Omits properties that are managed locally or can be reconstructed.
 type FileCache = Omit<ProcessedFile, 'id' | 'originalContent'>;
+
 
 // --- Theme & Settings ---
 const getThemeClasses = (theme: Theme) => {
@@ -1739,7 +1743,11 @@ const App = () => {
     const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([]);
     const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]); // In-memory active files
     const [activeFileId, setActiveFileId] = useState<number | null>(null);
-    const [filesCache, setFilesCache] = useState<Map<string, FileCache>>(new Map());
+
+    // In-memory cache for full file data of OPEN files.
+    // Keyed by ProcessedFile.id (local timestamp), NOT driveFileId.
+    const openFileFullCacheRef = useRef<Map<number, FileCache>>(new Map());
+    const debouncedFileSaveRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
 
     // UI & Error State
@@ -1758,7 +1766,7 @@ const App = () => {
     const [googleUser, setGoogleUser] = useState<any>(null);
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
     const userMenuRef = useRef<HTMLDivElement>(null);
-    const debouncedSaveRef = useRef<ReturnType<typeof setTimeout>>();
+    const mainDataDebouncedSaveRef = useRef<ReturnType<typeof setTimeout>>();
 
 
     // Task Queue State
@@ -1795,79 +1803,91 @@ const App = () => {
     useEffect(() => { localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries()))); }, [translationCache]);
     useEffect(() => { localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary)); }, [vocabulary]);
 
-    // This effect syncs changes from open files (processedFiles) into the persistent filesCache
-    useEffect(() => {
-        setFilesCache(prevCache => {
-            const updatedCache = new Map(prevCache);
-            let hasChanges = false;
-            processedFiles.forEach(file => {
-                if (file.driveFileId) {
-                    // Reconstruct the full chapter data from the lazy-loaded file state before saving
-                    const fileToCache = { ...file };
-                    const cachedFile = prevCache.get(file.driveFileId);
-                    
-                    // If the file was lazy-loaded, we need to merge back the full sentence data
-                    // from the original cache for chapters that are now loaded.
-                    if (cachedFile) {
-                        fileToCache.chapters = file.chapters.map((chapter, index) => {
-                             if (chapter.isLoaded) {
-                                return chapter; // Already has full data
-                            }
-                            // Not loaded in UI, so use original full data from cache
-                            return cachedFile.chapters[index] || chapter;
-                        });
-                    }
-
-                    const { id, originalContent, ...rest } = fileToCache;
-                    if (JSON.stringify(rest) !== JSON.stringify(cachedFile)) {
-                        updatedCache.set(file.driveFileId, rest);
-                        hasChanges = true;
-                    }
-                }
-            });
-            return hasChanges ? updatedCache : prevCache;
-        });
-    }, [processedFiles]);
-
-
-    // Auto-save to Drive (debounced)
+    const packMainDataForSave = useCallback(() => ({
+        version: '2.0', // Version bump for split-cache architecture
+        createdAt: new Date().toISOString(),
+        data: {
+            settings,
+            vocabulary,
+            analysisCache: Array.from(analysisCache.entries()),
+            translationCache: Array.from(translationCache.entries()),
+            workspaceItems,
+        }
+    }), [settings, vocabulary, analysisCache, translationCache, workspaceItems]);
+    
+    // Auto-save main data (settings, vocab, workspace list) to Drive
     useEffect(() => {
         if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
         
-        if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
+        if (mainDataDebouncedSaveRef.current) clearTimeout(mainDataDebouncedSaveRef.current);
     
-        debouncedSaveRef.current = setTimeout(() => {
-            const dataToSave = packDataForExport();
-            driveService.saveDataToDrive(dataToSave).catch(err => {
-                console.error("Lỗi tự động lưu vào Drive:", err);
-                // Optionally show a non-intrusive error message
+        mainDataDebouncedSaveRef.current = setTimeout(() => {
+            const dataToSave = packMainDataForSave();
+            driveService.saveJsonFileInAppFolder(DRIVE_DATA_FILE_NAME, dataToSave).catch(err => {
+                console.error("Lỗi tự động lưu dữ liệu chính vào Drive:", err);
             });
-        }, 3000); // 3-second debounce
+        }, 3000); // 3-second debounce for main data
     
         return () => {
-            if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
+            if (mainDataDebouncedSaveRef.current) clearTimeout(mainDataDebouncedSaveRef.current);
         };
-    }, [isLoggedIn, googleApiStatus, settings, vocabulary, analysisCache, translationCache, workspaceItems, filesCache]);
+    }, [isLoggedIn, googleApiStatus, packMainDataForSave]);
+
+
+    // Auto-save individual open file caches to Drive
+    useEffect(() => {
+        if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
+
+        processedFiles.forEach(file => {
+            if (!file.driveFileId) return; // Only save files that are on Drive
+
+            // Construct the full, savable state of the file from the UI state
+            const { id, originalContent, ...savableState } = file;
+            const lastSavedState = openFileFullCacheRef.current.get(id);
+
+            // This comparison is critical. It checks if the file state has changed since it was last cached in memory.
+            if (JSON.stringify(savableState) !== JSON.stringify(lastSavedState)) {
+                
+                // Update the in-memory cache to reflect the latest state
+                openFileFullCacheRef.current.set(id, savableState);
+
+                // Clear any pending save for this file to avoid redundant saves
+                if (debouncedFileSaveRef.current.has(id)) {
+                    clearTimeout(debouncedFileSaveRef.current.get(id)!);
+                }
+
+                // Set a new debounced save for this specific file's cache
+                const timeoutId = setTimeout(() => {
+                    driveService.saveJsonFileInAppFolder(`${file.driveFileId}.cache.json`, savableState)
+                        .catch(err => console.error(`Failed to save cache for ${file.fileName}:`, err));
+                }, 5000); // 5-second debounce for individual file caches
+
+                debouncedFileSaveRef.current.set(id, timeoutId);
+            }
+        });
+
+    }, [processedFiles, isLoggedIn, googleApiStatus.status]);
+
 
     const unpackAndLoadData = (data: any, from: 'local' | 'drive') => {
         if (!data || !data.version || !data.data) {
             if (from === 'drive') alert("Không tìm thấy dữ liệu sao lưu hợp lệ trên Drive.");
             return;
         }
-        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems, filesCache: loadedFilesCache } = data.data;
+        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems } = data.data;
         if (settings) setSettings(settings);
         if (vocabulary) setVocabulary(vocabulary);
         if (analysisCache) setAnalysisCache(new Map(analysisCache));
         if (translationCache) setTranslationCache(new Map(translationCache));
         if (loadedWorkspaceItems) setWorkspaceItems(loadedWorkspaceItems);
-        if (loadedFilesCache) setFilesCache(new Map(loadedFilesCache));
 
-        if (from === 'drive') {
-            // No need to open all files, just show the dashboard
-            setActiveFileId(null);
-            setProcessedFiles([]);
+        // With the new architecture, we no longer load all file caches, just show the dashboard.
+        setActiveFileId(null);
+        setProcessedFiles([]);
+        
+        if (from === 'local') {
+            alert('Khôi phục dữ liệu thành công! Dữ liệu cache của từng tệp sẽ được đồng bộ lên Google Drive khi bạn mở chúng.');
         }
-        alert('Khôi phục dữ liệu thành công!');
     };
 
     // --- Google API & Auth ---
@@ -1917,8 +1937,8 @@ const App = () => {
                             const profile = await response.json();
                             setGoogleUser(profile);
 
-                            // Auto-load data from drive after successful login
-                            const loadedData = await driveService.loadDataFromDrive();
+                            // Auto-load main data from drive after successful login
+                            const loadedData = await driveService.loadJsonFileFromAppFolder(DRIVE_DATA_FILE_NAME);
                             if(loadedData) {
                                 unpackAndLoadData(loadedData, 'drive');
                             }
@@ -2028,8 +2048,9 @@ const App = () => {
                      return;
                 }
                 
+                const newFileId = Date.now();
                 const newFile: ProcessedFile = {
-                    id: fileInfo.driveFileId ? Date.now() + Math.random() : Date.now(), // Ensure local files have unique IDs
+                    id: newFileId,
                     fileName,
                     originalContent: text,
                     chapters,
@@ -2039,6 +2060,10 @@ const App = () => {
                     type: fileInfo.type,
                     lastModified: new Date().toISOString(),
                 };
+
+                 // Create the initial cache data for saving
+                const { id, originalContent, ...savableState } = newFile;
+                openFileFullCacheRef.current.set(newFileId, savableState);
                 
                 setProcessedFiles(prev => {
                     // Prevent opening the same Drive file multiple times
@@ -2391,16 +2416,20 @@ const App = () => {
     }, [activeFileId]);
 
     const handleCloseFile = useCallback((fileIdToClose: number) => {
-        const newFiles = processedFiles.filter(f => f.id !== fileIdToClose);
-        
-        if (activeFileId === fileIdToClose) {
-            if (newFiles.length > 0) {
-                setActiveFileId(newFiles[0].id);
-            } else {
-                setActiveFileId(null); // Go back to dashboard view
+        setProcessedFiles(prevFiles => {
+            const newFiles = prevFiles.filter(f => f.id !== fileIdToClose);
+            if (activeFileId === fileIdToClose) {
+                setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
             }
+            return newFiles;
+        });
+
+        // Cleanup refs for the closed file
+        openFileFullCacheRef.current.delete(fileIdToClose);
+        if (debouncedFileSaveRef.current.has(fileIdToClose)) {
+            clearTimeout(debouncedFileSaveRef.current.get(fileIdToClose)!);
+            debouncedFileSaveRef.current.delete(fileIdToClose);
         }
-        setProcessedFiles(newFiles);
     }, [processedFiles, activeFileId]);
 
     const handleUnifyVocabulary = useCallback(() => {
@@ -2456,22 +2485,9 @@ const App = () => {
         setScrollTo({ chapterIndex, sentenceNumber });
     }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
     
-    const packDataForExport = () => ({
-        version: '1.4', // Version bump for lazy-loading structure
-        createdAt: new Date().toISOString(),
-        data: {
-            settings,
-            vocabulary,
-            analysisCache: Array.from(analysisCache.entries()),
-            translationCache: Array.from(translationCache.entries()),
-            workspaceItems,
-            filesCache: Array.from(filesCache.entries()),
-        }
-    });
-    
     const handleExportData = useCallback(() => {
         try {
-            const dataToExport = packDataForExport();
+            const dataToExport = packMainDataForSave();
             const jsonString = JSON.stringify(dataToExport, null, 2);
             const blob = new Blob([jsonString], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
@@ -2479,15 +2495,15 @@ const App = () => {
             a.href = url;
             a.download = `trinh-phan-tich-tieng-trung-backup-${new Date().toISOString().split('T')[0]}.json`;
             document.body.appendChild(a);
-a.click();
+            a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            alert('Đã tải xuống tệp sao lưu thành công.');
+            alert('Đã tải xuống tệp sao lưu thành công. (Lưu ý: Dữ liệu cache của từng tệp không được bao gồm trong bản sao lưu này)');
         } catch (err) {
             console.error('Lỗi khi xuất dữ liệu:', err);
             alert('Đã xảy ra lỗi khi tạo tệp sao lưu.');
         }
-    }, [settings, vocabulary, analysisCache, translationCache, workspaceItems, filesCache]);
+    }, [packMainDataForSave]);
 
     const handleImportData = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -2514,7 +2530,6 @@ a.click();
         const clearVocabulary = () => setVocabulary([]);
         const clearAnalysisCache = () => setAnalysisCache(new Map());
         const clearTranslationCache = () => setTranslationCache(new Map());
-        const clearFilesCache = () => setFilesCache(new Map());
         const resetSettings = () => setSettings({
             apiKey: '',
             fontSize: 16,
@@ -2533,9 +2548,10 @@ a.click();
                 clearVocabulary();
                 clearAnalysisCache();
                 clearTranslationCache();
-                clearFilesCache();
                 resetSettings();
                 setWorkspaceItems([]);
+                // Note: This does not clear individual file caches on Drive.
+                // That would require iterating and deleting, which is a more complex operation.
                 break;
         }
         alert(`Đã xóa "${dataType}" thành công.`);
@@ -2557,7 +2573,9 @@ a.click();
         setGoogleUser(null);
         setWorkspaceItems([]);
         setProcessedFiles([]);
-        setFilesCache(new Map());
+        openFileFullCacheRef.current.clear();
+        debouncedFileSaveRef.current.forEach(timeoutId => clearTimeout(timeoutId));
+        debouncedFileSaveRef.current.clear();
         setActiveFileId(null);
     };
     
@@ -2567,15 +2585,13 @@ a.click();
             if (fileIndex === -1) return prevFiles;
     
             const file = prevFiles[fileIndex];
-            if (!file.driveFileId) return prevFiles;
-    
             const chapterToLoad = file.chapters[chapterIndex];
             if (!chapterToLoad || chapterToLoad.isLoaded || !chapterToLoad.hasContent) {
                 return prevFiles;
             }
     
-            const cachedFileData = filesCache.get(file.driveFileId);
-            if (!cachedFileData) {
+            const fullCachedFileData = openFileFullCacheRef.current.get(file.id);
+            if (!fullCachedFileData) {
                 console.error("Cache miss for chapter content. This should not happen.");
                 const newChapters = [...file.chapters];
                 newChapters[chapterIndex] = { ...chapterToLoad, isLoaded: true, sentences: [], chapterError: "Lỗi: Không tìm thấy nội dung cache." };
@@ -2584,7 +2600,7 @@ a.click();
                 return newFiles;
             }
     
-            const fullChapterData = cachedFileData.chapters[chapterIndex];
+            const fullChapterData = fullCachedFileData.chapters[chapterIndex];
             if (fullChapterData) {
                 const newChapters = [...file.chapters];
                 newChapters[chapterIndex] = {
@@ -2599,7 +2615,7 @@ a.click();
             
             return prevFiles;
         });
-    }, [activeFileId, filesCache]);
+    }, [activeFileId]);
 
     const handleOpenFileFromWorkspace = async (item: WorkspaceItem) => {
         // If already open, just switch to it
@@ -2609,38 +2625,65 @@ a.click();
             return;
         }
 
-        // Check our cache first for lazy loading
-        const cachedFileData = filesCache.get(item.driveFileId);
-        if (cachedFileData) {
-            const lazyChapters = cachedFileData.chapters.map(ch => ({
-                ...ch,
-                sentences: [], // IMPORTANT: Start with empty sentences to save memory
-                isLoaded: false,
-                hasContent: ch.sentences && ch.sentences.length > 0,
-            }));
-    
-            const newFile: ProcessedFile = {
-                id: Date.now() + Math.random(),
-                fileName: cachedFileData.fileName,
-                chapters: lazyChapters,
-                visibleRange: cachedFileData.visibleRange || { start: 0, end: Math.min(PAGE_SIZE, lazyChapters.length) },
-                pageSize: cachedFileData.pageSize || PAGE_SIZE,
-                driveFileId: item.driveFileId,
-                type: cachedFileData.type,
-                lastModified: cachedFileData.lastModified,
-                originalContent: '', // Not needed immediately, we have the cache
-            };
-            setProcessedFiles(prev => [...prev, newFile]);
-            setActiveFileId(newFile.id);
-            return;
-        }
-
-        // Not in cache, proceed with the original flow (fetch from Drive)
         setIsLoading(true);
         setError(null);
         try {
-            const content = await driveService.fetchFileContent(item.driveFileId);
-            handleProcessAndOpenFile(content, item.name, { driveFileId: item.driveFileId, type: item.type });
+            // Attempt to load the dedicated cache file for this project
+            const loadedCache = await driveService.loadJsonFileFromAppFolder(`${item.driveFileId}.cache.json`);
+            
+            let newFile: ProcessedFile;
+            let fileCacheForRef: FileCache;
+            const newFileId = Date.now();
+
+            if (loadedCache) {
+                // Cache exists, load from it with lazy chapters
+                fileCacheForRef = loadedCache;
+                const lazyChapters = fileCacheForRef.chapters.map(ch => ({
+                    ...ch,
+                    sentences: [], // IMPORTANT: Start with empty sentences to save memory
+                    isLoaded: false,
+                    hasContent: ch.sentences && ch.sentences.length > 0,
+                }));
+        
+                newFile = {
+                    id: newFileId,
+                    fileName: fileCacheForRef.fileName,
+                    chapters: lazyChapters,
+                    visibleRange: fileCacheForRef.visibleRange || { start: 0, end: Math.min(PAGE_SIZE, lazyChapters.length) },
+                    pageSize: fileCacheForRef.pageSize || PAGE_SIZE,
+                    driveFileId: item.driveFileId,
+                    type: fileCacheForRef.type,
+                    lastModified: fileCacheForRef.lastModified,
+                    originalContent: '', // Not needed immediately, we have the cache
+                };
+            } else {
+                // No cache file, this is the first time opening it. Fetch original and process.
+                const content = await driveService.fetchFileContent(item.driveFileId, item.type === 'file' ? undefined : 'text/plain');
+                const chapters = processTextIntoChapters(content);
+                newFile = {
+                    id: newFileId,
+                    fileName: item.name,
+                    originalContent: content,
+                    chapters, // Not lazy this time, as it's freshly processed
+                    visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
+                    pageSize: PAGE_SIZE,
+                    driveFileId: item.driveFileId,
+                    type: item.type,
+                    lastModified: new Date().toISOString(),
+                };
+                
+                // Create the initial cache data for saving
+                const { id, originalContent: _oc, ...rest } = newFile;
+                fileCacheForRef = rest;
+            }
+
+            // Store the full cache data in the ref for this open file
+            openFileFullCacheRef.current.set(newFileId, fileCacheForRef);
+            
+            // Update state to show the file
+            setProcessedFiles(prev => [...prev, newFile]);
+            setActiveFileId(newFileId);
+
         } catch (err: any) {
             setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
         } finally {
@@ -2656,7 +2699,11 @@ a.click();
             setIsLoading(true);
             setError(null);
             try {
-                await driveService.deleteFileFromDrive(itemToDelete.driveFileId);
+                // Delete original file AND its cache file in parallel
+                await Promise.all([
+                    driveService.deleteFileFromDrive(itemToDelete.driveFileId),
+                    driveService.deleteJsonFileInAppFolder(`${itemToDelete.driveFileId}.cache.json`)
+                ]);
             } catch (err: any) {
                 setError({ message: `Lỗi khi xóa tệp trên Drive: ${err.message}` });
                 setIsLoading(false);
@@ -2665,7 +2712,7 @@ a.click();
                 setIsLoading(false);
             }
         } else {
-            if (!window.confirm(`Bạn có chắc muốn xóa "${itemToDelete.name}" khỏi không gian làm việc không? Tệp gốc trên Drive sẽ không bị ảnh hưởng.`)) {
+            if (!window.confirm(`Bạn có chắc muốn xóa "${itemToDelete.name}" khỏi không gian làm việc không? Tệp gốc trên Drive và cache của nó sẽ không bị ảnh hưởng.`)) {
                 return;
             }
         }
@@ -2675,21 +2722,12 @@ a.click();
         if (fileToRemove) {
             handleCloseFile(fileToRemove.id);
         }
-
-        // Remove from cache
-        setFilesCache(prevCache => {
-            const newCache = new Map(prevCache);
-            if (itemToDelete.driveFileId) {
-                newCache.delete(itemToDelete.driveFileId);
-            }
-            return newCache;
-        });
     
         // Remove from workspace list
         setWorkspaceItems(prev => prev.filter(item => item.driveFileId !== itemToDelete.driveFileId));
     };
 
-    const handleOpenFileFromDrivePicker = () => {
+    const handleOpenFileFromDrivePicker = (_event?: React.MouseEvent) => {
         const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
         const token = window.gapi.client.getToken();
 
@@ -2716,8 +2754,6 @@ a.click();
                     setError(null);
                     try {
                         const content = await driveService.fetchFileContent(file.id, file.mimeType);
-                        // Open it, but don't add to workspace yet. It gets added if user works on it and has state.
-                        // Actually, let's treat it like a new file.
                         await handleCreateNewWorkspaceItem(content, file.name, 'file');
                     } catch (err: any) {
                         setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
