@@ -46,6 +46,7 @@ export interface SentenceData {
 export interface ChapterData {
     title: string;
     chapterNumber?: string;
+    fileNamePrefix: string; // e.g., '00001_chapter-title'
     sentences: SentenceData[];
     isExpanded: boolean;
     partNumber?: number;
@@ -57,30 +58,29 @@ export interface ChapterData {
     isBatchAnalyzing?: boolean;
     batchAnalysisProgress?: number; 
     
-    isLoaded?: boolean;
-    hasContent?: boolean;
+    isLoaded: boolean; // Has the content been loaded from Drive for this session?
+    hasCache?: boolean; // Does a .cache.json file exist on Drive?
     chapterError?: string;
 }
 
-export interface ProcessedFile {
-    id: number;
+
+export interface ProjectData {
+    id: string; // driveFolderId serves as the unique ID
     fileName: string;
-    originalContent: string;
+    driveFolderId: string;
     chapters: ChapterData[];
     visibleRange: {
         start: number;
         end: number;
     };
     pageSize: number;
-    driveFileId?: string; // ID of the file on Google Drive
-    lastModified: string;
-    type: 'file' | 'text';
 }
 
+
 export interface WorkspaceItem {
-    driveFileId: string;
+    driveFolderId: string;
     name: string;
-    type: 'file' | 'text';
+    type: 'file' | 'text'; // Kept for potential future use, but everything is a "project" now
     lastModified: string;
 }
 

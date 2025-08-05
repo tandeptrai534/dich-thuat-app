@@ -2,7 +2,7 @@
 import React, { useRef, useState } from 'react';
 import { Spinner } from './common/Spinner';
 import { GoogleIcon, UploadIcon } from './common/icons';
-import { useSettings } from '../App';
+import { useSettings } from '../contexts/settingsContext';
 
 interface InputAreaProps {
     onProcess: (text: string, fileName: string) => void;

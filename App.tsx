@@ -3,7 +3,8 @@ import React, { useState, useCallback, useRef, useEffect, createContext, useCont
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
 import * as driveService from './services/googleDriveService';
-import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, DisplayMode, WorkspaceItem, SpecialTerm } from './types';
+import type { ApiError, ChapterData, ProjectData, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, DisplayMode, WorkspaceItem, SpecialTerm } from './types';
+import { SettingsContext, getThemeClasses, useSettings } from './contexts/settingsContext';
 import { InputArea } from './components/InputArea';
 import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon, BookmarkSquareIcon, DownloadIcon, TrashIcon, UploadIcon, GoogleIcon, ArrowRightOnRectangleIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
@@ -25,17 +26,17 @@ declare global {
 
 // --- Constants ---
 const DEFAULT_CHAPTER_TITLE = 'Văn bản chính';
-const MAX_CHAPTER_LENGTH = 5000;
+const APP_DATA_FOLDER_NAME = 'Trình Phân Tích Tiếng Trung AppData';
 const PAGE_SIZE = 10;
 const TRANSLATION_BATCH_SIZE = 10;
-const DRIVE_DATA_FILE_NAME = 'trinh-phan-tich-data.json';
+const DRIVE_DATA_FILE_NAME = 'app-data.v3.json'; // Main settings/vocab file for this architecture version.
 const SETTINGS_STORAGE_KEY = 'chinese_analyzer_settings_v3';
 const ANALYSIS_CACHE_STORAGE_KEY = 'chinese_analyzer_analysis_cache';
 const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
-const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5'; // version bump for new structure
+const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5';
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;
 
-const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
 
 // --- Types ---
@@ -44,50 +45,16 @@ type GoogleApiStatus = {
   message: string;
 };
 
-// Represents the data structure for a single file's cache.
-// Omits properties that are managed locally or can be reconstructed.
-type FileCache = Omit<ProcessedFile, 'id' | 'originalContent'>;
-
-
-// --- Theme & Settings ---
-const getThemeClasses = (theme: Theme) => {
-    switch (theme) {
-        case 'dark':
-            return {
-                mainBg: 'bg-gray-900', text: 'text-slate-200',
-                cardBg: 'bg-gray-800', border: 'border-gray-700',
-                hoverBg: 'hover:bg-gray-700', popupBg: 'bg-slate-900',
-                popupText: 'text-slate-100', mutedText: 'text-slate-400',
-                button: { bg: 'bg-slate-700', text: 'text-slate-200', hoverBg: 'hover:bg-slate-600' },
-                primaryButton: { bg: 'bg-blue-500', text: 'text-white', hoverBg: 'hover:bg-blue-600' }
-            };
-        case 'sepia':
-            return {
-                mainBg: 'bg-amber-50', text: 'text-stone-800',
-                cardBg: 'bg-amber-100', border: 'border-amber-200',
-                hoverBg: 'hover:bg-amber-200', popupBg: 'bg-stone-800',
-                popupText: 'text-stone-100', mutedText: 'text-stone-500',
-                button: { bg: 'bg-stone-200', text: 'text-stone-800', hoverBg: 'hover:bg-stone-300' },
-                primaryButton: { bg: 'bg-orange-800', text: 'text-white', hoverBg: 'hover:bg-orange-900' }
-            };
-        default: // light
-            return {
-                mainBg: 'bg-slate-50', text: 'text-slate-800',
-                cardBg: 'bg-white', border: 'border-slate-200',
-                hoverBg: 'hover:bg-slate-100', popupBg: 'bg-slate-800',
-                popupText: 'text-white', mutedText: 'text-slate-500',
-                button: { bg: 'bg-slate-200', text: 'text-slate-700', hoverBg: 'hover:bg-slate-300' },
-                primaryButton: { bg: 'bg-blue-600', text: 'text-white', hoverBg: 'hover:bg-blue-700' }
-            };
+type MainDriveData = {
+    version: '3.0'; 
+    createdAt: string;
+    data: {
+        settings: AppSettings;
+        vocabulary: VocabularyItem[];
+        // Caches are no longer stored in the main data file.
     }
-};
+}
 
-export const SettingsContext = createContext<{ settings: AppSettings; theme: ReturnType<typeof getThemeClasses>; setSettings: React.Dispatch<React.SetStateAction<AppSettings>>; vocabulary: VocabularyItem[] } | null>(null);
-export const useSettings = () => {
-    const context = useContext(SettingsContext);
-    if (!context) throw new Error("useSettings must be used within a SettingsProvider");
-    return context;
-};
 
 // --- Helper Functions ---
 const loadScript = (src: string): Promise<void> => {
@@ -105,12 +72,11 @@ const loadScript = (src: string): Promise<void> => {
     });
 };
 
-const isChinesePunctuation = (char: string) => CHINESE_PUNCTUATION_REGEX.test(char.trim());
 const escapeRegex = (string: string) => string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+const sanitizeFileName = (name: string) => name.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').slice(0, 50);
 
 const chineseNumMap: { [key: string]: number } = { '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '零': 0 };
 const chineseUnitMap: { [key: string]: number } = { '十': 10, '百': 100, '千': 1000 };
-const chineseSectionUnitMap: { [key: string]: number } = { '万': 10000, '亿': 100000000 };
 
 function chineseToArabic(numStr: string | undefined | null): number | null {
     if (!numStr) return null;
@@ -118,157 +84,95 @@ function chineseToArabic(numStr: string | undefined | null): number | null {
     if (/^\d+$/.test(numStr)) {
         return parseInt(numStr, 10);
     }
-
+    
+    // Simplified logic for chapter numbers
     let total = 0;
-    let sectionTotal = 0;
-    let currentNum = 0;
-    let originalStr = numStr;
-    
-    if (originalStr.startsWith('十')) {
-        originalStr = '一' + originalStr;
-    }
-    
-    for (const char of originalStr) {
+    let section = 0;
+    let unit = 1;
+
+    for (let i = numStr.length - 1; i >= 0; i--) {
+        const char = numStr[i];
         if (char in chineseNumMap) {
-            currentNum = chineseNumMap[char];
+            section += chineseNumMap[char] * unit;
         } else if (char in chineseUnitMap) {
-            sectionTotal += (currentNum === 0 && sectionTotal === 0 ? 1 : currentNum) * chineseUnitMap[char];
-            currentNum = 0;
-        } else if (char in chineseSectionUnitMap) {
-            total += (sectionTotal + currentNum) * chineseSectionUnitMap[char];
-            sectionTotal = 0;
-            currentNum = 0;
+            unit = chineseUnitMap[char];
+            if (section === 0) section = unit;
+        } else if (char === '万') {
+            total += section * 10000;
+            section = 0;
+            unit = 1;
+        } else if (char === '亿') {
+            total += section * 100000000;
+            section = 0;
+            unit = 1;
         }
     }
-    
-    total += sectionTotal + currentNum;
-    
-    if (total === 0 && numStr.length > 0 && !Object.keys(chineseNumMap).some(c => numStr.includes(c))) {
-        return null;
+    total += section;
+
+    // Handle "十" as 10
+    if (numStr === '十') return 10;
+    // Handle "十一" as 11, etc.
+    if (numStr.startsWith('十')) {
+        let suffix = numStr.substring(1);
+        if (suffix in chineseNumMap) {
+            return 10 + chineseNumMap[suffix];
+        }
     }
 
-    return total;
+    return total > 0 ? total : null;
 }
 
-
-function splitLargeChapter(title: string, content: string): Pick<ChapterData, 'title' | 'sentences'>[] {
-    const createSentences = (text: string) => {
-        let sentenceCounter = 1;
-        return text.split('\n').map(s => s.trim()).filter(s => {
-            const punctuationOnlyRegex = /^[“”…"'.!?,;:\s]+$/;
-            return s && !punctuationOnlyRegex.test(s);
-        }).map(s => ({
-            original: s,
-            sentenceNumber: sentenceCounter++,
-            analysisState: 'pending' as const,
-            translationState: 'pending' as const
-        }));
-    };
-    
-    if (content.length <= MAX_CHAPTER_LENGTH) {
-        return [{ title, sentences: createSentences(content) }];
-    }
-
-    const chunks: Pick<ChapterData, 'title' | 'sentences'>[] = [];
-    let remainingContent = content;
-    let partNumber = 1;
-
-    while (remainingContent.length > 0) {
-        const currentTitle = partNumber === 1 ? title : `${title} (Phần ${partNumber})`;
-        let partContent: string;
-
-        if (remainingContent.length <= MAX_CHAPTER_LENGTH * 1.2) {
-            partContent = remainingContent;
-            remainingContent = '';
-        } else {
-            let splitAt = -1;
-            const punctuation = ['\n', '。', '！', '？'];
-            for (const p of punctuation) {
-                const lastPunc = remainingContent.lastIndexOf(p, MAX_CHAPTER_LENGTH);
-                if (lastPunc > splitAt) {
-                    splitAt = lastPunc;
-                }
-            }
-
-            if (splitAt < MAX_CHAPTER_LENGTH / 2) {
-                const fallbackSplit = remainingContent.lastIndexOf(' ', MAX_CHAPTER_LENGTH);
-                splitAt = fallbackSplit > 0 ? fallbackSplit : MAX_CHAPTER_LENGTH;
-            }
-
-            partContent = remainingContent.substring(0, splitAt + 1);
-            remainingContent = remainingContent.substring(splitAt + 1);
-        }
-
-        const trimmedContent = partContent.trim();
-        if (trimmedContent) {
-            chunks.push({
-                title: currentTitle,
-                sentences: createSentences(trimmedContent),
-            });
-        }
-        partNumber++;
-    }
-    return chunks;
+interface RawChapter {
+    title: string;
+    content: string;
+    chapterNumber?: string;
 }
 
-function processTextIntoChapters(text: string): ChapterData[] {
-    const chapters: ChapterData[] = [];
-    const CHAPTER_REGEX = /^(?:Chương|Hồi|Quyển|Chapter|卷|第)\s*(\d+|[一二三四五六七八九十百千万亿〇零两]+)\s*(?:(?:章|回|节|話|篇|卷之)\s*.*|[:：]\s*.*|$)/gm;
-    const chapterMatches = [...text.matchAll(CHAPTER_REGEX)];
+function processTextIntoRawChapters(text: string): RawChapter[] {
+    const rawChapters: RawChapter[] = [];
+    const CHAPTER_REGEX = /^(?:Chương|Hồi|Quyển|Chapter|卷|第)\s*(\d+|[一二三四五六七八九十百千万亿〇零两]+)\s*(?:(?:章|回|节|話|篇|卷之)\s*.*|[:：]\s*.*|$)/im;
 
-    const createChapterData = (title: string, content: string, chapterNumber?: string): void => {
-        const chunks = splitLargeChapter(title, content);
-        const totalParts = chunks.length;
+    const sections = text.split(CHAPTER_REGEX);
 
-        chunks.forEach((chunk, index) => {
-            const partNumber = index + 1;
-            const titleSentence: SentenceData = {
-                original: chunk.title,
-                sentenceNumber: 0, 
-                analysisState: 'pending',
-                translationState: 'pending',
-                isTitle: true,
-            };
-
-            chapters.push({
-                title: chunk.title,
-                chapterNumber,
-                partNumber,
-                totalParts,
-                sentences: [titleSentence, ...chunk.sentences],
-                isExpanded: false,
-                isLoaded: true, // Freshly processed chapters are always "loaded"
-                hasContent: true,
-            });
-        });
-    };
-
-    if (chapterMatches.length === 0) {
+    if (sections.length < 3) {
         if (text.trim()) {
-            createChapterData(DEFAULT_CHAPTER_TITLE, text.trim());
+            rawChapters.push({ title: DEFAULT_CHAPTER_TITLE, content: text.trim() });
         }
-        return chapters;
+        return rawChapters;
     }
 
-    const textBeforeFirstChapter = text.substring(0, chapterMatches[0].index).trim();
+    const textBeforeFirstChapter = sections[0].trim();
     if (textBeforeFirstChapter) {
-        createChapterData('Phần mở đầu', textBeforeFirstChapter);
+        rawChapters.push({ title: 'Phần mở đầu', content: textBeforeFirstChapter });
     }
 
-    chapterMatches.forEach((match, i) => {
-        const chapterTitle = match[0].trim().replace(/\s+/g, ' ');
-        const chapterNumber = match[1];
-        const contentStartIndex = match.index! + match[0].length;
-        const nextChapterIndex = (i + 1 < chapterMatches.length) ? chapterMatches[i + 1].index : text.length;
-        const chapterContent = text.substring(contentStartIndex, nextChapterIndex).trim();
+    for (let i = 1; i < sections.length; i += 2) {
+        const chapterNumber = sections[i];
+        const combinedContent = sections[i+1] || "";
+        const lines = combinedContent.split('\n');
+        const chapterTitle = lines[0].trim().replace(/\s+/g, ' ');
+        const chapterContent = lines.slice(1).join('\n').trim();
 
         if (chapterContent) {
-            createChapterData(chapterTitle, chapterContent, chapterNumber);
+             rawChapters.push({ title: chapterTitle || `Chương ${chapterNumber}`, content: chapterContent, chapterNumber });
         }
-    });
+    }
 
-    return chapters;
+    return rawChapters;
 }
+
+function createSentencesFromContent(text: string): SentenceData[] {
+    let sentenceCounter = 1;
+    return text.split('\n').map(s => s.trim()).filter(s => {
+        const punctuationOnlyRegex = /^[“”…"'.!?,;:\s]+$/;
+        return s && !punctuationOnlyRegex.test(s);
+    }).map(s => ({
+        original: s,
+        sentenceNumber: sentenceCounter++,
+        analysisState: 'pending' as const,
+        translationState: 'pending' as const
+    }));
+};
 
 
 // --- UI Components ---
@@ -464,11 +368,9 @@ const InteractiveText: React.FC<{ text: string | undefined }> = ({ text }) => {
 
     if (!text) return null;
 
-    // Type 1: Terms that are forced to be Sino-Vietnamese in the output (blue)
     const sinoTerms = vocabulary.filter(v => v.isForceSino && v.sinoVietnamese?.trim());
     const sinoTermMap = new Map(sinoTerms.map(item => [item.sinoVietnamese.toLowerCase(), item]));
 
-    // Type 2: Natural Vietnamese translations that are linked to a vocabulary item (green)
     const translationTerms = vocabulary.filter(v =>
         !v.isForceSino &&
         v.vietnameseTranslation?.trim() &&
@@ -485,7 +387,6 @@ const InteractiveText: React.FC<{ text: string | undefined }> = ({ text }) => {
         return <>{text}</>;
     }
     
-    // Using Set to get unique search strings, then sorting by length to match longer phrases first
     const uniqueSearchStrings = [...new Set(allSearchStrings.filter(s => s))].sort((a, b) => b.length - a.length);
 
     if (uniqueSearchStrings.length === 0) {
@@ -498,22 +399,19 @@ const InteractiveText: React.FC<{ text: string | undefined }> = ({ text }) => {
     return (
         <>
             {parts.map((part, index) => {
-                if (!part) return null; // Handle empty strings from split
+                if (!part) return null; 
                 const partLower = part.toLowerCase();
 
-                // Check for a forced Sino term match first
                 const sinoVocabItem = sinoTermMap.get(partLower);
                 if (sinoVocabItem) {
                     return <VocabularyTerm key={index} vocabItem={sinoVocabItem} />;
                 }
 
-                // If not, check for a natural translation match
                 const translationVocabItem = translationTermMap.get(partLower);
                 if (translationVocabItem) {
                     return <TranslationTerm key={index} vocabItem={translationVocabItem} matchedText={part} />;
                 }
                 
-                // If no match, return the text part
                 return <React.Fragment key={index}>{part}</React.Fragment>;
             })}
         </>
@@ -789,7 +687,7 @@ const ChapterDisplay: React.FC<{
     const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
         const isOpen = e.currentTarget.open;
         onUpdate({ isExpanded: isOpen });
-        if (isOpen && !chapter.isLoaded && chapter.hasContent) {
+        if (isOpen && !chapter.isLoaded) {
             onLoadChapterContent();
         }
     };
@@ -811,12 +709,7 @@ const ChapterDisplay: React.FC<{
 
     const renderChapterActions = () => {
         if (!chapter.isLoaded) {
-             return (
-                <div className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-slate-500 dark:text-slate-400">
-                    <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
-                    <span>Đang tải...</span>
-                </div>
-            );
+             return null; // Don't show actions until loaded
         }
         if (chapter.isBatchTranslating) {
             return (
@@ -873,6 +766,12 @@ const ChapterDisplay: React.FC<{
                 </div>
             </summary>
             <div className={`p-4 border-t ${theme.border} space-y-4`}>
+                {!chapter.isLoaded && (
+                    <div className="flex items-center justify-center gap-2 py-8 text-sm font-semibold text-slate-500 dark:text-slate-400">
+                        <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
+                        <span>Đang tải nội dung chương...</span>
+                    </div>
+                )}
                 {chapter.chapterError && (
                     <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
                         <strong className="font-bold">Lỗi chương: </strong>
@@ -896,19 +795,23 @@ const ChapterDisplay: React.FC<{
                     </div>
                 )}
 
-                <div className="space-y-2">
-                    {chapter.sentences.map((sentence, index) => (
-                        <SentenceDisplay
-                            key={`${chapterIndex}-${index}`}
-                            id={`sentence-${chapterIndex}-${index}`}
-                            sentence={sentence}
-                            onClick={() => onSentenceClick(index)}
-                        />
-                    ))}
-                </div>
-                <div className="flex justify-end pt-2">
-                    {chapter.isLoaded && <AdvancedCopyButton chapter={chapter} />}
-                </div>
+                {chapter.isLoaded && (
+                    <>
+                        <div className="space-y-2">
+                            {chapter.sentences.map((sentence, index) => (
+                                <SentenceDisplay
+                                    key={`${chapterIndex}-${index}`}
+                                    id={`sentence-${chapterIndex}-${index}`}
+                                    sentence={sentence}
+                                    onClick={() => onSentenceClick(index)}
+                                />
+                            ))}
+                        </div>
+                        <div className="flex justify-end pt-2">
+                            <AdvancedCopyButton chapter={chapter} />
+                        </div>
+                    </>
+                )}
             </div>
         </details>
     );
@@ -1069,8 +972,8 @@ const ChapterNavigator: React.FC<{
     );
 };
 
-const FileDisplay: React.FC<{
-    fileData: ProcessedFile;
+const ProjectDisplay: React.FC<{
+    projectData: ProjectData;
     onSentenceClick: (chapterIndex: number, sentenceIndex: number) => void;
     onVisibleRangeUpdate: (newRange: { start: number; end: number }) => void;
     onPageSizeUpdate: (newSize: number) => void;
@@ -1081,27 +984,27 @@ const FileDisplay: React.FC<{
     onChapterUpdate: (chapterIndex: number, newState: Partial<ChapterData>) => void;
     onChapterLoadContent: (chapterIndex: number) => void;
     isApiBusy: boolean;
-}> = ({ fileData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onChapterStopTranslate, onChapterAnalyze, onChapterStopAnalyze, onChapterUpdate, onChapterLoadContent, isApiBusy }) => {
+}> = ({ projectData, onSentenceClick, onVisibleRangeUpdate, onPageSizeUpdate, onChapterTranslate, onChapterStopTranslate, onChapterAnalyze, onChapterStopAnalyze, onChapterUpdate, onChapterLoadContent, isApiBusy }) => {
     
     const handleRangeChange = useCallback((newRange: { start: number; end: number }) => {
         const start = Math.max(0, newRange.start);
-        const end = Math.min(fileData.chapters.length, newRange.end);
+        const end = Math.min(projectData.chapters.length, newRange.end);
         onVisibleRangeUpdate({ start, end });
-    }, [fileData.chapters.length, onVisibleRangeUpdate]);
+    }, [projectData.chapters.length, onVisibleRangeUpdate]);
 
     return (
         <div className="space-y-6">
              <ChapterNavigator
-                totalChapters={fileData.chapters.length}
+                totalChapters={projectData.chapters.length}
                 onRangeChange={handleRangeChange}
-                pageSize={fileData.pageSize}
-                currentRange={{start: fileData.visibleRange.start, end: fileData.visibleRange.end}}
+                pageSize={projectData.pageSize}
+                currentRange={{start: projectData.visibleRange.start, end: projectData.visibleRange.end}}
                 onPageSizeChange={onPageSizeUpdate}
             />
 
             <div className="space-y-4">
-                {fileData.chapters.slice(fileData.visibleRange.start, fileData.visibleRange.end).map((chapter, index) => {
-                    const originalChapterIndex = fileData.visibleRange.start + index;
+                {projectData.chapters.slice(projectData.visibleRange.start, projectData.visibleRange.end).map((chapter, index) => {
+                    const originalChapterIndex = projectData.visibleRange.start + index;
                     return (
                         <ChapterDisplay
                             key={originalChapterIndex}
@@ -1419,7 +1322,7 @@ const VocabularyModal: React.FC<{
                 <header className={`p-4 border-b ${theme.border} flex-shrink-0`}>
                     <div className="flex justify-between items-center gap-4">
                         <h2 className={`text-xl font-bold ${theme.text}`}>Từ điển cá nhân</h2>
-                         <button onClick={onUnify} title="Đồng nhất bản dịch với các thuật ngữ đã đánh dấu" className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg}`}>
+                         <button onClick={() => onUnify()} title="Đồng nhất bản dịch với các thuật ngữ đã đánh dấu" className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg}`}>
                             <ArrowPathIcon className="w-4 h-4" /> Đồng nhất
                         </button>
                         <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
@@ -1525,103 +1428,17 @@ const VocabularyModal: React.FC<{
 };
 
 
-const CacheLibraryModal: React.FC<{
-    isOpen: boolean;
-    onClose: () => void;
-    analysisCache: Map<string, AnalyzedText>;
-    translationCache: Map<string, string>;
-    onDeleteAnalysis: (key: string) => void;
-    onDeleteTranslation: (key: string) => void;
-}> = ({ isOpen, onClose, analysisCache, translationCache, onDeleteAnalysis, onDeleteTranslation }) => {
-    const { theme } = useSettings();
-
-    if (!isOpen) return null;
-
-    const analysisEntries = Array.from(analysisCache.entries());
-    const translationEntries = Array.from(translationCache.entries());
-
-    const CacheItem: React.FC<{itemKey: string, content: string, onDelete: () => void}> = ({ itemKey, content, onDelete }) => (
-        <div className={`p-3 rounded-lg border ${theme.border} ${theme.mainBg} flex justify-between items-start`}>
-            <div className="flex-grow min-w-0">
-                <p className={`font-mono text-xs ${theme.mutedText} truncate`} title={itemKey}>{itemKey}</p>
-                <p className={`mt-1 ${theme.text} text-sm truncate`}>{content}</p>
-            </div>
-            <button
-                onClick={onDelete}
-                className={`ml-4 flex-shrink-0 p-1.5 rounded-full text-red-400 hover:bg-red-500/10 hover:text-red-600 transition-colors`}
-                title="Xóa khỏi cache"
-            >
-                <CloseIcon className="w-4 h-4" />
-            </button>
-        </div>
-    );
-
-    return (
-        <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={onClose}>
-            <div
-                className={`w-full max-w-4xl max-h-[80vh] flex flex-col ${theme.cardBg} rounded-xl shadow-2xl overflow-hidden`}
-                onClick={e => e.stopPropagation()}
-            >
-                <header className={`p-4 border-b ${theme.border} flex justify-between items-center`}>
-                    <h2 className={`text-xl font-bold ${theme.text}`}>Thư viện Cache</h2>
-                    <button onClick={onClose} className={`${theme.mutedText} hover:${theme.text}`}>
-                        <CloseIcon className="w-6 h-6" />
-                    </button>
-                </header>
-                <div className="p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <section>
-                        <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Phân tích câu ({analysisEntries.length})</h3>
-                        <div className="space-y-2">
-                             {analysisEntries.length === 0 ? (
-                                <p className={theme.mutedText}>Chưa có phân tích nào được lưu.</p>
-                            ) : (
-                                analysisEntries.map(([key, value]) => (
-                                    <CacheItem 
-                                        key={key} 
-                                        itemKey={key}
-                                        content={value.translation} 
-                                        onDelete={() => onDeleteAnalysis(key)} 
-                                    />
-                                ))
-                            )}
-                        </div>
-                    </section>
-                    <section>
-                         <h3 className={`text-lg font-semibold mb-2 ${theme.text}`}>Bản dịch câu ({translationEntries.length})</h3>
-                         <div className="space-y-2">
-                             {translationEntries.length === 0 ? (
-                                <p className={theme.mutedText}>Chưa có bản dịch nào được lưu.</p>
-                            ) : (
-                                translationEntries.map(([key, value]) => (
-                                     <CacheItem 
-                                        key={key} 
-                                        itemKey={key}
-                                        content={value}
-                                        onDelete={() => onDeleteTranslation(key)} 
-                                    />
-                                ))
-                            )}
-                         </div>
-                    </section>
-                </div>
-                <footer className={`p-3 border-t ${theme.border} text-center`}>
-                     <p className={`text-xs ${theme.mutedText}`}>Hiển thị {analysisEntries.length + translationEntries.length} mục đã cache.</p>
-                </footer>
-            </div>
-        </div>
-    );
-};
-
 const DataManagementModal: React.FC<{
     isOpen: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (event: React.ChangeEvent<HTMLInputElement>) => void;
-    onClear: (dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => void;
+    onClear: (dataType: 'vocabulary' | 'settings' | 'all') => void;
     googleApiStatus: GoogleApiStatus;
     isLoggedIn: boolean;
     onLogin: () => void;
-}> = ({ isOpen, onClose, onExport, onImport, onClear, googleApiStatus, isLoggedIn, onLogin }) => {
+    onLogout: () => void;
+}> = ({ isOpen, onClose, onExport, onImport, onClear, googleApiStatus, isLoggedIn, onLogin, onLogout }) => {
     const { theme } = useSettings();
     const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -1631,13 +1448,11 @@ const DataManagementModal: React.FC<{
         importInputRef.current?.click();
     };
     
-    const handleClearClick = (type: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => {
+    const handleClearClick = (type: 'vocabulary' | 'settings' | 'all') => {
         const messages = {
             vocabulary: "Bạn có chắc chắn muốn xóa toàn bộ từ điển cá nhân không? Hành động này không thể hoàn tác.",
-            analysisCache: "Bạn có chắc chắn muốn xóa toàn bộ cache phân tích không?",
-            translationCache: "Bạn có chắc chắn muốn xóa toàn bộ cache dịch không?",
             settings: "Bạn có chắc chắn muốn đặt lại cài đặt giao diện về mặc định không?",
-            all: "BẠN CÓ CHẮC CHẮN MUỐN XÓA TẤT CẢ DỮ LIỆU ỨNG DỤNG KHÔNG? Bao gồm không gian làm việc, cache tệp, từ điển, cache và cài đặt. Hành động này không thể hoàn tác.",
+            all: "BẠN CÓ CHẮC CHẮN MUỐN XÓA TẤT CẢ DỮ LIỆU CỤC BỘ KHÔNG? Bao gồm cài đặt, từ điển. Hành động này không thể hoàn tác và không ảnh hưởng đến tệp trên Google Drive.",
         };
         if (window.confirm(messages[type])) {
             onClear(type);
@@ -1660,13 +1475,18 @@ const DataManagementModal: React.FC<{
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><GoogleIcon className="w-5 h-5" />Google Drive</h3>
                         <p className={`text-sm ${theme.mutedText}`}>
-                            Toàn bộ dữ liệu của bạn, bao gồm không gian làm việc, cache tệp, từ điển và cache, được tự động sao lưu vào Google Drive khi bạn đăng nhập.
+                            Đăng nhập để tự động sao lưu và đồng bộ các dự án của bạn trên nhiều thiết bị. Dữ liệu cài đặt và từ điển cũng sẽ được sao lưu.
                         </p>
-                        {!isLoggedIn && (
+                        {isLoggedIn ? (
+                             <button 
+                                onClick={onLogout} 
+                                className={`w-full flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg}`}
+                            >
+                                <ArrowRightOnRectangleIcon className="w-5 h-5 mr-2" />
+                                Đăng xuất
+                            </button>
+                        ) : (
                              <>
-                                <p className={`text-sm ${theme.mutedText}`}>
-                                    Đăng nhập để bắt đầu.
-                                </p>
                                 <button 
                                     onClick={onLogin} 
                                     disabled={googleApiStatus.status !== 'ready'} 
@@ -1688,7 +1508,7 @@ const DataManagementModal: React.FC<{
 
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><DownloadIcon className="w-5 h-5"/>Sao lưu cục bộ (Tệp)</h3>
-                        <p className={`text-sm ${theme.mutedText}`}>Tải xuống một bản sao lưu toàn bộ dữ liệu của bạn (không gian làm việc, cache tệp, từ điển, cache) vào một tệp JSON.</p>
+                        <p className={`text-sm ${theme.mutedText}`}>Tải xuống một bản sao lưu dữ liệu ứng dụng (cài đặt, từ điển). Lưu ý: Dữ liệu dự án và cache trên Drive không được bao gồm.</p>
                         <button onClick={onExport} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
                             Tải xuống tệp sao lưu
                         </button>
@@ -1702,19 +1522,18 @@ const DataManagementModal: React.FC<{
                         <button onClick={handleImportClick} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
                              <UploadIcon className="w-5 h-5"/> Tải lên từ tệp .json
                         </button>
-                         <p className={`text-xs ${theme.mutedText}`}> <strong className="text-amber-600 dark:text-amber-400">Lưu ý:</strong> Tải lên sẽ ghi đè toàn bộ dữ liệu hiện tại.</p>
+                         <p className={`text-xs ${theme.mutedText}`}> <strong className="text-amber-600 dark:text-amber-400">Lưu ý:</strong> Tải lên sẽ ghi đè dữ liệu cục bộ hiện tại.</p>
                     </section>
 
                     <div className={`border-t ${theme.border}`}></div>
 
                     <section className="space-y-3">
-                        <h3 className={`text-lg font-semibold text-red-600 dark:text-red-400 flex items-center gap-2`}><TrashIcon className="w-5 h-5"/>Xóa dữ liệu</h3>
-                        <p className={`text-sm ${theme.mutedText}`}>Giải phóng dung lượng hoặc khắc phục sự cố bằng cách xóa dữ liệu được lưu trong trình duyệt. Hành động này không thể hoàn tác.</p>
+                        <h3 className={`text-lg font-semibold text-red-600 dark:text-red-400 flex items-center gap-2`}><TrashIcon className="w-5 h-5"/>Xóa dữ liệu cục bộ</h3>
+                        <p className={`text-sm ${theme.mutedText}`}>Xóa dữ liệu được lưu trong trình duyệt. Hành động này không thể hoàn tác và không ảnh hưởng đến tệp trên Google Drive.</p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <button onClick={() => handleClearClick('vocabulary')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa từ điển</button>
-                            <button onClick={() => handleClearClick('analysisCache')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa cache phân tích</button>
-                            <button onClick={() => handleClearClick('translationCache')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Xóa cache dịch</button>
-                            <button onClick={() => handleClearClick('all')} className={`px-4 py-2 text-sm font-bold rounded-lg shadow-sm bg-red-600 text-white hover:bg-red-700 transition-colors`}>Xóa TẤT CẢ</button>
+                             <button onClick={() => handleClearClick('settings')} className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-sm border border-red-500/50 text-red-600 hover:bg-red-500/10 transition-colors`}>Reset cài đặt</button>
+                            <button onClick={() => handleClearClick('all')} className={`sm:col-span-2 px-4 py-2 text-sm font-bold rounded-lg shadow-sm bg-red-600 text-white hover:bg-red-700 transition-colors`}>Xóa TẤT CẢ dữ liệu cục bộ</button>
                         </div>
                     </section>
                 </div>
@@ -1735,27 +1554,21 @@ const App = () => {
         theme: 'light',
         lineHeight: 1.6,
     });
-    const [analysisCache, setAnalysisCache] = useState<Map<string, AnalyzedText>>(new Map());
-    const [translationCache, setTranslationCache] = useState<Map<string, string>>(new Map());
     const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
     
     // Workspace State
-    const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([]);
-    const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]); // In-memory active files
-    const [activeFileId, setActiveFileId] = useState<number | null>(null);
-
-    // In-memory cache for full file data of OPEN files.
-    // Keyed by ProcessedFile.id (local timestamp), NOT driveFileId.
-    const openFileFullCacheRef = useRef<Map<number, FileCache>>(new Map());
-    const debouncedFileSaveRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+    const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceItem[]>([]);
+    const [openProjects, setOpenProjects] = useState<ProjectData[]>([]);
+    const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+    const debouncedChapterSaveRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
 
     // UI & Error State
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [loadingMessage, setLoadingMessage] = useState<string>('Đang khởi tạo ứng dụng...');
     const [error, setError] = useState<ApiError | null>(null);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
-    const [isCacheLibraryOpen, setIsCacheLibraryOpen] = useState(false);
     const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
     const [scrollTo, setScrollTo] = useState<{ chapterIndex: number; sentenceNumber: number } | null>(null);
 
@@ -1767,29 +1580,18 @@ const App = () => {
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
     const userMenuRef = useRef<HTMLDivElement>(null);
     const mainDataDebouncedSaveRef = useRef<ReturnType<typeof setTimeout>>();
+    const [appFolderId, setAppFolderId] = useState<string>('');
 
 
     // Task Queue State
-    const [taskQueue, setTaskQueue] = useState<Array<{
-        id: string,
-        action: () => Promise<void>,
-        description: string,
-    }>>([]);
-    const [isApiBusy, setIsApiBusy] = useState(false);
-    const [currentTaskDescription, setCurrentTaskDescription] = useState<string | null>(null);
     const stopFlags = useRef<Set<string>>(new Set());
+    const [isApiBusy, setIsApiBusy] = useState(false);
     
     // --- Data Loading & Saving ---
     const loadLocalData = useCallback(() => {
         try {
             const storedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
             if (storedSettings) setSettings(prev => ({...prev, ...JSON.parse(storedSettings)}));
-            
-            const storedAnalysisCache = localStorage.getItem(ANALYSIS_CACHE_STORAGE_KEY);
-            if (storedAnalysisCache) setAnalysisCache(new Map(JSON.parse(storedAnalysisCache)));
-            
-            const storedTranslationCache = localStorage.getItem(TRANSLATION_CACHE_STORAGE_KEY);
-            if (storedTranslationCache) setTranslationCache(new Map(JSON.parse(storedTranslationCache)));
             
             const storedVocabulary = localStorage.getItem(VOCABULARY_STORAGE_KEY);
             if (storedVocabulary) setVocabulary(JSON.parse(storedVocabulary));
@@ -1799,106 +1601,82 @@ const App = () => {
     useEffect(() => { loadLocalData(); }, [loadLocalData]);
 
     useEffect(() => { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); }, [settings]);
-    useEffect(() => { localStorage.setItem(ANALYSIS_CACHE_STORAGE_KEY, JSON.stringify(Array.from(analysisCache.entries()))); }, [analysisCache]);
-    useEffect(() => { localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries()))); }, [translationCache]);
     useEffect(() => { localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary)); }, [vocabulary]);
 
-    const packMainDataForSave = useCallback(() => ({
-        version: '2.0', // Version bump for split-cache architecture
+    const packMainDataForSave = useCallback((): MainDriveData => ({
+        version: '3.0',
         createdAt: new Date().toISOString(),
-        data: {
-            settings,
-            vocabulary,
-            analysisCache: Array.from(analysisCache.entries()),
-            translationCache: Array.from(translationCache.entries()),
-            workspaceItems,
-        }
-    }), [settings, vocabulary, analysisCache, translationCache, workspaceItems]);
+        data: { settings, vocabulary }
+    }), [settings, vocabulary]);
     
-    // Auto-save main data (settings, vocab, workspace list) to Drive
+    // Auto-save main data (settings, vocab) to Drive
     useEffect(() => {
-        if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
+        if (!isLoggedIn || googleApiStatus.status !== 'ready' || !appFolderId) return;
         
         if (mainDataDebouncedSaveRef.current) clearTimeout(mainDataDebouncedSaveRef.current);
     
         mainDataDebouncedSaveRef.current = setTimeout(() => {
             const dataToSave = packMainDataForSave();
-            driveService.saveJsonFileInAppFolder(DRIVE_DATA_FILE_NAME, dataToSave).catch(err => {
-                console.error("Lỗi tự động lưu dữ liệu chính vào Drive:", err);
-            });
-        }, 3000); // 3-second debounce for main data
+            driveService.saveFileInFolder(appFolderId, DRIVE_DATA_FILE_NAME, dataToSave, 'application/json')
+                .then(() => console.log("Main data auto-saved to Drive."))
+                .catch(err => console.error("Lỗi tự động lưu dữ liệu chính vào Drive:", err));
+        }, 5000); 
     
         return () => {
             if (mainDataDebouncedSaveRef.current) clearTimeout(mainDataDebouncedSaveRef.current);
         };
-    }, [isLoggedIn, googleApiStatus, packMainDataForSave]);
+    }, [isLoggedIn, googleApiStatus.status, appFolderId, packMainDataForSave]);
 
 
-    // Auto-save individual open file caches to Drive
-    useEffect(() => {
-        if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
-
-        processedFiles.forEach(file => {
-            if (!file.driveFileId) return; // Only save files that are on Drive
-
-            // Construct the full, savable state of the file from the UI state
-            const { id, originalContent, ...savableState } = file;
-            const lastSavedState = openFileFullCacheRef.current.get(id);
-
-            // This comparison is critical. It checks if the file state has changed since it was last cached in memory.
-            if (JSON.stringify(savableState) !== JSON.stringify(lastSavedState)) {
-                
-                // Update the in-memory cache to reflect the latest state
-                openFileFullCacheRef.current.set(id, savableState);
-
-                // Clear any pending save for this file to avoid redundant saves
-                if (debouncedFileSaveRef.current.has(id)) {
-                    clearTimeout(debouncedFileSaveRef.current.get(id)!);
-                }
-
-                // Set a new debounced save for this specific file's cache
-                const timeoutId = setTimeout(() => {
-                    driveService.saveJsonFileInAppFolder(`${file.driveFileId}.cache.json`, savableState)
-                        .catch(err => console.error(`Failed to save cache for ${file.fileName}:`, err));
-                }, 5000); // 5-second debounce for individual file caches
-
-                debouncedFileSaveRef.current.set(id, timeoutId);
-            }
-        });
-
-    }, [processedFiles, isLoggedIn, googleApiStatus.status]);
-
-
-    const unpackAndLoadData = (data: any, from: 'local' | 'drive') => {
-        if (!data || !data.version || !data.data) {
-            if (from === 'drive') alert("Không tìm thấy dữ liệu sao lưu hợp lệ trên Drive.");
-            return;
+    const saveChapterToDrive = useCallback((project: ProjectData, chapterIndex: number) => {
+        const chapter = project.chapters[chapterIndex];
+        if (!chapter || !chapter.isLoaded) return;
+    
+        const key = `${project.driveFolderId}-${chapter.fileNamePrefix}`;
+        if (debouncedChapterSaveRef.current.has(key)) {
+            clearTimeout(debouncedChapterSaveRef.current.get(key)!);
         }
-        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems } = data.data;
-        if (settings) setSettings(settings);
-        if (vocabulary) setVocabulary(vocabulary);
-        if (analysisCache) setAnalysisCache(new Map(analysisCache));
-        if (translationCache) setTranslationCache(new Map(translationCache));
-        if (loadedWorkspaceItems) setWorkspaceItems(loadedWorkspaceItems);
+    
+        const timeoutId = setTimeout(() => {
+            const { isExpanded, ...cacheableChapterData } = chapter; 
+            const cacheFileName = `${chapter.fileNamePrefix}.cache.json`;
+            driveService.saveFileInFolder(project.driveFolderId, cacheFileName, cacheableChapterData, 'application/json')
+                .then(() => console.log(`Cache for chapter ${chapter.title} saved.`))
+                .catch(err => console.error(`Failed to save cache for chapter ${chapter.title}:`, err));
+            
+            debouncedChapterSaveRef.current.delete(key);
+        }, 5000); 
+    
+        debouncedChapterSaveRef.current.set(key, timeoutId);
+    }, []);
 
-        // With the new architecture, we no longer load all file caches, just show the dashboard.
-        setActiveFileId(null);
-        setProcessedFiles([]);
-        
-        if (from === 'local') {
-            alert('Khôi phục dữ liệu thành công! Dữ liệu cache của từng tệp sẽ được đồng bộ lên Google Drive khi bạn mở chúng.');
-        }
-    };
-
+    const updateProjectState = useCallback((projectId: string, updateFn: (project: ProjectData) => ProjectData) => {
+        setOpenProjects(prev => prev.map(p => p.id === projectId ? updateFn(p) : p));
+    }, []);
+    
     // --- Google API & Auth ---
+    
+    const handleLogin = useCallback(() => {
+        if (tokenClient) {
+            tokenClient.requestAccessToken({ prompt: '' });
+        }
+    }, [tokenClient]);
+    
+    const handleLogout = useCallback(() => {
+        setIsLoggedIn(false);
+        setGoogleUser(null);
+        setWorkspaceProjects([]);
+        setOpenProjects([]);
+        setActiveProjectId(null);
+        setAppFolderId('');
+    }, []);
+
     useEffect(() => {
         const initGoogleApis = async () => {
             const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID;
-            const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
-
-            if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) {
-                const missingKey = !GOOGLE_CLIENT_ID ? 'VITE_GOOGLE_CLIENT_ID' : 'VITE_API_KEY';
-                setGoogleApiStatus({ status: 'error', message: `Lỗi cấu hình: ${missingKey} chưa được thiết lập.` });
+            if (!GOOGLE_CLIENT_ID) {
+                setGoogleApiStatus({ status: 'error', message: `Lỗi cấu hình: VITE_GOOGLE_CLIENT_ID chưa được thiết lập.` });
+                 setIsLoading(false);
                 return;
             }
 
@@ -1908,13 +1686,9 @@ const App = () => {
                     loadScript('https://accounts.google.com/gsi/client'),
                 ]);
 
-                await new Promise<void>((resolve, reject) => {
-                    window.gapi.load('client:picker', () => {
-                        window.gapi.client.init({
-                            apiKey: GOOGLE_API_KEY,
-                            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-                        }).then(resolve, reject);
-                    });
+                await new Promise<void>((resolve) => window.gapi.load('client', resolve));
+                await window.gapi.client.init({
+                    discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
                 });
                 
                 const client = window.google.accounts.oauth2.initTokenClient({
@@ -1925,8 +1699,13 @@ const App = () => {
                             console.error("Google Auth Error:", tokenResponse);
                             setError({ message: `Lỗi đăng nhập Google: ${tokenResponse.error_description || tokenResponse.error}` });
                             setIsLoggedIn(false);
+                            setIsLoading(false);
                             return;
                         }
+                        
+                        window.gapi.client.setToken(tokenResponse);
+                        setIsLoading(true);
+                        setLoadingMessage("Đang đăng nhập và tải dữ liệu...");
                         setIsLoggedIn(true);
                         
                         try {
@@ -1937,15 +1716,30 @@ const App = () => {
                             const profile = await response.json();
                             setGoogleUser(profile);
 
-                            // Auto-load main data from drive after successful login
-                            const loadedData = await driveService.loadJsonFileFromAppFolder(DRIVE_DATA_FILE_NAME);
-                            if(loadedData) {
-                                unpackAndLoadData(loadedData, 'drive');
+                            const driveAppFolderId = await driveService.getOrCreateAppFolderId();
+                            setAppFolderId(driveAppFolderId);
+                            
+                            const mainDataFiles = await driveService.listFilesInFolder(driveAppFolderId);
+                            const mainDataFile = mainDataFiles.find(f => f.name === DRIVE_DATA_FILE_NAME);
+
+                            if (mainDataFile?.id) {
+                                const loadedData: MainDriveData = await driveService.loadFileContent(mainDataFile.id);
+                                if (loadedData?.data) {
+                                    setSettings(prev => ({...prev, ...loadedData.data.settings}));
+                                    setVocabulary(loadedData.data.vocabulary || []);
+                                }
                             }
+
+                            const projects = await driveService.listProjectFolders();
+                             setWorkspaceProjects(projects.map(p => ({...p, type: 'file' })));
+
                         } catch (err) {
                             console.error("Lỗi khi lấy thông tin người dùng hoặc tải dữ liệu:", err);
                             const message = err instanceof Error ? err.message : String(err);
                             setError({ message: `Không thể lấy thông tin người dùng: ${message}` });
+                        } finally {
+                            setIsLoading(false);
+                            setLoadingMessage('');
                         }
                     },
                 });
@@ -1955,44 +1749,24 @@ const App = () => {
                 console.error("Lỗi khởi tạo API Google:", error);
                 const message = error instanceof Error ? error.message : "Lỗi không xác định";
                 setGoogleApiStatus({ status: 'error', message: `Không thể khởi tạo dịch vụ Google: ${message}` });
+            } finally {
+                setIsLoading(false);
             }
         };
         initGoogleApis();
     }, []);
     
-    // --- Task Queue & UI Effects ---
-    useEffect(() => {
-        if (isApiBusy || taskQueue.length === 0) return;
-
-        const task = taskQueue[0];
-        setTaskQueue(prev => prev.slice(1));
-        setIsApiBusy(true);
-        setCurrentTaskDescription(task.description);
-        setError(null);
-
-        (async () => {
-            try {
-                await task.action();
-            } catch (err: any) {
-                console.error(`Lỗi trong tác vụ '${task.description}':`, err);
-                setError({ message: err.message || `Lỗi khi thực hiện: ${task.description}` });
-            } finally {
-                setIsApiBusy(false);
-                setCurrentTaskDescription(null);
-            }
-        })();
-    }, [taskQueue, isApiBusy]);
+    // --- UI Effects ---
     
     useEffect(() => {
-        if (scrollTo) {
-            const sentenceIndex = processedFiles.find(f => f.id === activeFileId)
-                ?.chapters[scrollTo.chapterIndex]
+        if (scrollTo && activeProjectId) {
+            const project = openProjects.find(p => p.id === activeProjectId);
+            if (!project) { setScrollTo(null); return; }
+
+            const sentenceIndex = project.chapters[scrollTo.chapterIndex]
                 ?.sentences.findIndex(s => s.sentenceNumber === scrollTo.sentenceNumber) ?? -1;
                 
-            if (sentenceIndex === -1) {
-                setScrollTo(null);
-                return;
-            }
+            if (sentenceIndex === -1) { setScrollTo(null); return; }
 
             const elementId = `sentence-${scrollTo.chapterIndex}-${sentenceIndex}`;
             const element = document.getElementById(elementId);
@@ -2000,14 +1774,12 @@ const App = () => {
                 setTimeout(() => {
                     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     element.classList.add('highlight-scroll');
-                    setTimeout(() => {
-                        element.classList.remove('highlight-scroll');
-                    }, 2500);
+                    setTimeout(() => element.classList.remove('highlight-scroll'), 2500);
                 }, 100);
             }
             setScrollTo(null);
         }
-    }, [scrollTo, activeFileId, processedFiles]);
+    }, [scrollTo, activeProjectId, openProjects]);
     
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -2016,9 +1788,7 @@ const App = () => {
             }
         };
         document.addEventListener("mousedown", handleClickOutside);
-        return () => {
-            document.removeEventListener("mousedown", handleClickOutside);
-        };
+        return () => document.removeEventListener("mousedown", handleClickOutside);
     }, [userMenuRef]);
     
     const checkApiKey = useCallback(() => {
@@ -2030,482 +1800,382 @@ const App = () => {
         return true;
     }, [settings.apiKey]);
 
+    // --- Project & Chapter Management ---
 
-    const handleProcessAndOpenFile = useCallback((text: string, fileName: string, fileInfo: { driveFileId?: string; type: 'file' | 'text' }) => {
-        if (!text.trim()) {
-            setError({ message: "Nội dung tệp trống." });
+    const handleOpenWorkspaceItem = useCallback(async (projectToOpen: WorkspaceItem) => {
+        if (!projectToOpen?.driveFolderId) {
+            setError({ message: "Dự án được chọn không hợp lệ." });
+            return;
+        }
+        
+        if (openProjects.some(p => p.id === projectToOpen.driveFolderId)) {
+            setActiveProjectId(projectToOpen.driveFolderId);
             return;
         }
 
-        setError(null);
         setIsLoading(true);
-        setTimeout(() => {
-            try {
-                const chapters = processTextIntoChapters(text);
-                if (chapters.length === 0) {
-                     setError({ message: "Không tìm thấy nội dung có thể phân tích." });
-                     setIsLoading(false);
-                     return;
-                }
+        setLoadingMessage(`Đang mở dự án "${projectToOpen.name}"...`);
+        setError(null);
+
+        try {
+            const filesInFolder = await driveService.listFilesInFolder(projectToOpen.driveFolderId);
+            
+            const chapterFiles = filesInFolder
+                .filter(f => f.name.endsWith('.txt') && !f.name.includes('.cache.'))
+                .sort((a, b) => a.name.localeCompare(b.name));
                 
-                const newFileId = Date.now();
-                const newFile: ProcessedFile = {
-                    id: newFileId,
-                    fileName,
-                    originalContent: text,
-                    chapters,
-                    visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
-                    pageSize: PAGE_SIZE,
-                    driveFileId: fileInfo.driveFileId,
-                    type: fileInfo.type,
-                    lastModified: new Date().toISOString(),
+            const cacheFiles = new Set(filesInFolder.filter(f => f.name.endsWith('.cache.json')).map(f => f.name));
+
+            const chapters: ChapterData[] = chapterFiles.map(file => {
+                const fileNamePrefix = file.name.replace('.txt', '');
+                const titleMatch = fileNamePrefix.match(/^\d+_(.*)$/);
+                const title = titleMatch ? titleMatch[1].replace(/_/g, ' ') : fileNamePrefix;
+                const chapterNumberMatch = fileNamePrefix.match(/^(\d+)/);
+
+                return {
+                    title: title,
+                    chapterNumber: chapterNumberMatch ? chapterNumberMatch[1] : undefined,
+                    fileNamePrefix: fileNamePrefix,
+                    sentences: [],
+                    isExpanded: false,
+                    isLoaded: false,
+                    hasCache: cacheFiles.has(`${fileNamePrefix}.cache.json`),
                 };
+            });
 
-                 // Create the initial cache data for saving
-                const { id, originalContent, ...savableState } = newFile;
-                openFileFullCacheRef.current.set(newFileId, savableState);
-                
-                setProcessedFiles(prev => {
-                    // Prevent opening the same Drive file multiple times
-                    if (fileInfo.driveFileId && prev.some(f => f.driveFileId === fileInfo.driveFileId)) {
-                        setActiveFileId(prev.find(f => f.driveFileId === fileInfo.driveFileId)!.id);
-                        return prev;
-                    }
-                    return [...prev, newFile]
-                });
-                setActiveFileId(newFile.id);
+            const newProject: ProjectData = {
+                id: projectToOpen.driveFolderId,
+                driveFolderId: projectToOpen.driveFolderId,
+                fileName: projectToOpen.name,
+                chapters: chapters,
+                pageSize: PAGE_SIZE,
+                visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
+            };
 
-            } catch (e: any) {
-                setError({ message: `Lỗi xử lý văn bản: ${e.message}` });
-            } finally {
-                setIsLoading(false);
-            }
-        }, 50);
-    }, []);
+            setOpenProjects(prev => [...prev, newProject]);
+            setActiveProjectId(newProject.id);
 
-    const handleCreateNewWorkspaceItem = useCallback(async (text: string, fileName: string, type: 'file' | 'text') => {
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            setError({ message: `Không thể mở dự án: ${message}` });
+            setActiveProjectId(null);
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+        }
+    }, [openProjects]);
+
+    const handleCreateNewProject = useCallback(async (text: string, fileName: string) => {
         if (!text.trim()) {
             setError({ message: "Vui lòng nhập văn bản hoặc tải lên một tệp." });
             return;
         }
-
-        const fileInfo = { type };
-
         if (!isLoggedIn) {
-            handleProcessAndOpenFile(text, fileName, fileInfo);
-            return;
+             alert("Vui lòng đăng nhập với Google để tạo dự án mới.");
+             handleLogin();
+             return;
         }
 
         setIsLoading(true);
         setError(null);
+
         try {
-            const driveFileId = await driveService.createFileInDrive(fileName, text);
-            const newWorkspaceItem: WorkspaceItem = {
-                driveFileId,
-                name: fileName,
-                type,
+            const rawChapters = processTextIntoRawChapters(text);
+            if (rawChapters.length === 0) {
+                throw new Error("Không tìm thấy chương nào trong văn bản.");
+            }
+            const projectName = fileName.replace(/\.txt$/i, '').trim();
+            setLoadingMessage(`Đang tạo thư mục dự án "${projectName}"...`);
+            const driveFolderId = await driveService.createProjectFolder(projectName);
+
+            for (let i = 0; i < rawChapters.length; i++) {
+                const chapter = rawChapters[i];
+                setLoadingMessage(`Đang tải lên chương ${i + 1}/${rawChapters.length}: ${chapter.title}`);
+                const chapterFileName = `${String(i).padStart(5, '0')}_${sanitizeFileName(chapter.title)}`;
+                await driveService.saveFileInFolder(driveFolderId, `${chapterFileName}.txt`, chapter.content, 'text/plain');
+            }
+
+            setLoadingMessage('Đang mở dự án...');
+            const newProjectItem: WorkspaceItem = {
+                driveFolderId: driveFolderId,
+                name: projectName,
+                type: 'file',
                 lastModified: new Date().toISOString(),
             };
-            setWorkspaceItems(prev => [newWorkspaceItem, ...prev.filter(item => item.driveFileId !== driveFileId)]);
-            handleProcessAndOpenFile(text, fileName, { driveFileId, type });
-        } catch(e: any) {
-            setError({ message: `Lỗi khi tạo tệp trên Drive: ${e.message}`});
+            
+            setWorkspaceProjects(prev => [newProjectItem, ...prev.filter(p => p.driveFolderId !== driveFolderId)]);
+            await handleOpenWorkspaceItem(newProjectItem);
+
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error("Lỗi khi tạo dự án mới:", err);
+            setError({ message: `Không thể tạo dự án: ${message}` });
         } finally {
             setIsLoading(false);
+            setLoadingMessage('');
         }
-    }, [isLoggedIn, handleProcessAndOpenFile]);
-
-
-    const handleSaveVocabulary = useCallback((newTerms: SpecialTerm[], location: VocabularyLocation) => {
-        setVocabulary(prevVocab => {
-            const vocabMap = new Map(prevVocab.map(item => [item.term, item]));
-            let updated = false;
-
-            newTerms.forEach(termData => {
-                if (!vocabMap.has(termData.term)) {
-                    vocabMap.set(termData.term, {
-                        ...termData,
-                        firstLocation: location,
-                        isForceSino: false,
-                    });
-                    updated = true;
-                }
-            });
-
-            return updated ? Array.from(vocabMap.values()) : prevVocab;
-        });
-    }, []);
-
-    const handleDeleteVocabularyItem = useCallback((termToDelete: string) => {
-        setVocabulary(prevVocab => prevVocab.filter(item => item.term !== termToDelete));
-    }, []);
+    }, [isLoggedIn, handleLogin, handleOpenWorkspaceItem]);
     
-    const handleToggleForceSino = useCallback((termToToggle: string) => {
-        setVocabulary(prevVocab => 
-            prevVocab.map(item => 
-                item.term === termToToggle ? { ...item, isForceSino: !item.isForceSino } : item
-            )
-        );
-    }, []);
+    const handleCloseProject = useCallback((projectId: string) => {
+        setOpenProjects(prev => prev.filter(p => p.id !== projectId));
+        if (activeProjectId === projectId) {
+            setActiveProjectId(null);
+        }
+    }, [activeProjectId]);
 
-    const handleUpdateVocabularyItem = useCallback((originalTerm: string, updatedItem: VocabularyItem) => {
-        setVocabulary(prevVocab => {
-            const newVocab = prevVocab.map(item => {
-                if (item.term === originalTerm) {
-                    return updatedItem;
-                }
-                return item;
-            });
-            return newVocab;
-        });
-    }, []);
-
-    const handleChapterUpdate = useCallback((chapterIndex: number, newState: Partial<ChapterData>) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id === activeFileId) {
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = { ...newChapters[chapterIndex], ...newState };
-                return { ...file, chapters: newChapters };
+    const handleDeleteProject = useCallback(async (project: WorkspaceItem, deleteFromDrive: boolean) => {
+        setIsLoading(true);
+        setLoadingMessage(`Đang xóa dự án "${project.name}"...`);
+        try {
+            if (deleteFromDrive && isLoggedIn) {
+                await driveService.deleteFolder(project.driveFolderId);
             }
-            return file;
-        }));
-    }, [activeFileId]);
-    
-     const handleSentencesUpdate = useCallback((chapterIndex: number, sentenceUpdates: { index: number, update: Partial<SentenceData> }[]) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id !== activeFileId) return file;
-            
-            const newChapters = [...file.chapters];
-            const chapterToUpdate = newChapters[chapterIndex];
-            if (!chapterToUpdate) return file;
+            handleCloseProject(project.driveFolderId);
+            setWorkspaceProjects(prev => prev.filter(p => p.driveFolderId !== project.driveFolderId));
+        } catch(err) {
+            const message = err instanceof Error ? err.message : String(err);
+            setError({ message: `Không thể xóa dự án: ${message}` });
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+        }
+    }, [isLoggedIn, handleCloseProject]);
 
-            const newSentences = [...chapterToUpdate.sentences];
-            sentenceUpdates.forEach(({ index, update }) => {
-                if (newSentences[index]) {
-                    newSentences[index] = { ...newSentences[index], ...update };
-                }
-            });
-            newChapters[chapterIndex] = { ...chapterToUpdate, sentences: newSentences };
-            return { ...file, chapters: newChapters };
-        }));
-    }, [activeFileId]);
+    const onChapterUpdate = useCallback((projectId: string, chapterIndex: number, update: Partial<ChapterData>) => {
+        updateProjectState(projectId, p => {
+            const newChapters = [...p.chapters];
+            newChapters[chapterIndex] = { ...newChapters[chapterIndex], ...update };
+            const project = { ...p, chapters: newChapters };
+            if (update.sentences) {
+                saveChapterToDrive(project, chapterIndex);
+            }
+            return project;
+        });
+    }, [updateProjectState, saveChapterToDrive]);
 
+    const handleLoadChapterContent = useCallback(async (projectId: string, chapterIndex: number) => {
+        const project = openProjects.find(p => p.id === projectId);
+        if (!project) return;
+        
+        const chapter = project.chapters[chapterIndex];
+        if (chapter.isLoaded) return;
+        
+        const update = (data: Partial<ChapterData>) => onChapterUpdate(projectId, chapterIndex, data);
+        
+        try {
+            const allFiles = await driveService.listFilesInFolder(project.driveFolderId);
 
-    const handleIndividualSentenceAnalysis = useCallback(async (chapterIndex: number, sentenceIndex: number) => {
-        const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file) return;
+            if (chapter.hasCache) {
+                 const cacheFile = allFiles.find(f => f.name === `${chapter.fileNamePrefix}.cache.json`);
+                 if(cacheFile?.id) {
+                    const cachedData: ChapterData = await driveService.loadFileContent(cacheFile.id);
+                    update({ ...cachedData, isLoaded: true, isExpanded: true });
+                    return;
+                 }
+            }
 
-        const sentence = file.chapters[chapterIndex].sentences[sentenceIndex];
+            const contentFile = allFiles.find(f => f.name === `${chapter.fileNamePrefix}.txt`);
+            if(contentFile?.id) {
+                const content = await driveService.loadFileContent(contentFile.id);
+                const sentences = createSentencesFromContent(content);
+                const titleSentence: SentenceData = { original: chapter.title, isTitle: true, analysisState: 'pending', translationState: 'pending' };
+                update({ sentences: [titleSentence, ...sentences], isLoaded: true });
+            } else {
+                 throw new Error(`Không tìm thấy tệp nội dung: ${chapter.fileNamePrefix}.txt`);
+            }
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            update({ chapterError: message, isLoaded: true });
+        }
+    }, [openProjects, onChapterUpdate]);
+
+    const handleSentenceClick = useCallback(async (projectId: string, chapterIndex: number, sentenceIndex: number) => {
+        if (!checkApiKey() || isApiBusy) return;
+
+        const project = openProjects.find(p => p.id === projectId);
+        if (!project) return;
+        
+        const sentence = project.chapters[chapterIndex].sentences[sentenceIndex];
+        if (!sentence || sentence.analysisState === 'loading' || sentence.analysisState === 'done') return;
+
+        setIsApiBusy(true);
 
         const updateSentence = (update: Partial<SentenceData>) => {
-            handleSentencesUpdate(chapterIndex, [{ index: sentenceIndex, update }]);
-        };
-        
-        if (sentence.analysisState === 'loading') return;
-
-        if (sentence.analysisState === 'done') {
-            const modes: DisplayMode[] = ['translation', 'grammar', 'detailed-word', 'original'];
-            const currentModeIndex = modes.indexOf(sentence.displayMode!);
-            const nextMode = modes[(currentModeIndex + 1) % modes.length];
-            updateSentence({ displayMode: nextMode });
-            return;
-        }
-        
-        if (!checkApiKey()) return;
-        
-        const analysisCacheKey = sentence.original;
-        if (analysisCache.has(analysisCacheKey)) {
-            const cachedResult = analysisCache.get(analysisCacheKey)!;
-            updateSentence({ analysisState: 'done', analysisResult: cachedResult, displayMode: 'translation' });
-            return;
-        } 
-        
-        const task = {
-            id: `analyze-${file.id}-${chapterIndex}-${sentenceIndex}`,
-            description: `Phân tích câu...`,
-            action: async () => {
-                const forcedSinoTerms = vocabulary.filter(v => v.isForceSino).map(v => ({ term: v.term, sinoVietnamese: v.sinoVietnamese }));
-                updateSentence({ analysisState: 'loading' });
-                try {
-                    const result = await analyzeSentence(sentence.original, settings.apiKey, forcedSinoTerms);
-                    setAnalysisCache(prevCache => new Map(prevCache).set(analysisCacheKey, result));
-                    updateSentence({ analysisState: 'done', analysisResult: result, displayMode: 'translation' });
-
-                    if (result.specialTerms && result.specialTerms.length > 0) {
-                        const location: VocabularyLocation = {
-                            chapterIndex: chapterIndex,
-                            chapterTitle: file.chapters[chapterIndex].title,
-                            sentenceNumber: sentence.sentenceNumber!,
-                            originalSentence: sentence.original,
-                        };
-                        handleSaveVocabulary(result.specialTerms, location);
-                    }
-                } catch (err: any) {
-                    updateSentence({ analysisState: 'error', analysisError: err.message });
-                    throw err; 
-                }
-            }
-        };
-        setTaskQueue(prev => [...prev, task]);
-    }, [activeFileId, processedFiles, analysisCache, handleSentencesUpdate, handleSaveVocabulary, vocabulary, settings.apiKey, checkApiKey]);
-    
-    const handleTranslateChapter = useCallback((chapterIndex: number) => {
-        const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file || !checkApiKey()) return;
-
-        const task = {
-            id: `translate-${file.id}-${chapterIndex}`,
-            description: `Đang dịch chương #${chapterIndex + 1}`,
-            action: async () => {
-                const stopKey = `translate-${file.id}-${chapterIndex}`;
-                stopFlags.current.delete(stopKey);
-
-                const chapter = file.chapters[chapterIndex];
-                const sentencesToTranslate = chapter.sentences
-                    .map((s, i) => ({ ...s, originalIndex: i }))
-                    .filter(s => !s.isTitle && s.translationState === 'pending');
-
-                const totalToTranslate = sentencesToTranslate.length;
-                if (totalToTranslate === 0) return;
-                
-                const forcedSinoTerms = vocabulary.filter(v => v.isForceSino).map(v => ({ term: v.term, sinoVietnamese: v.sinoVietnamese }));
-
-                handleChapterUpdate(chapterIndex, { isBatchTranslating: true, batchTranslationProgress: 0 });
-                let translatedCount = 0;
-
-                for (let i = 0; i < totalToTranslate; i += TRANSLATION_BATCH_SIZE) {
-                    if (stopFlags.current.has(stopKey)) break;
-                    
-                    const batch = sentencesToTranslate.slice(i, i + TRANSLATION_BATCH_SIZE);
-                    handleSentencesUpdate(chapterIndex, batch.map(s => ({ index: s.originalIndex, update: { translationState: 'loading' } })));
-
-                    try {
-                        const batchOriginals = batch.map(s => s.original);
-                        const translationResults = await translateSentencesInBatch(batchOriginals, settings.apiKey, forcedSinoTerms);
-                        handleSentencesUpdate(chapterIndex, batch.map((s, j) => ({
-                            index: s.originalIndex,
-                            update: { translationState: 'done', translation: translationResults[j] }
-                        })));
-                    } catch (err: any) {
-                        handleSentencesUpdate(chapterIndex, batch.map(s => ({
-                            index: s.originalIndex,
-                            update: { translationState: 'error', translationError: err.message }
-                        })));
-                        throw err; 
-                    }
-                    
-                    translatedCount += batch.length;
-                    handleChapterUpdate(chapterIndex, { batchTranslationProgress: translatedCount / totalToTranslate });
-                }
-
-                handleChapterUpdate(chapterIndex, { isBatchTranslating: false });
-                
-                if (!stopFlags.current.has(stopKey)) {
-                    setTaskQueue(prev => [...prev, {
-                        id: `analyze-seq-${file.id}-${chapterIndex}`,
-                        description: `Phân tích chương #${chapterIndex + 1}`,
-                        action: () => handleAnalyzeChapterSequentially(chapterIndex),
-                    }]);
-                }
-            }
-        };
-
-        setTaskQueue(prev => [...prev, task]);
-    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate, vocabulary, settings.apiKey, checkApiKey]);
-
-    const handleAnalyzeChapterSequentially = useCallback(async (chapterIndex: number) => {
-        const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file || !checkApiKey()) return;
-
-        const stopKey = `analyze-${file.id}-${chapterIndex}`;
-        stopFlags.current.delete(stopKey);
-        
-        const chapter = file.chapters[chapterIndex];
-        const sentencesToAnalyze = chapter.sentences
-            .map((s, i) => ({ ...s, originalIndex: i }))
-            .filter(s => s.analysisState === 'pending');
-
-        const totalToAnalyze = sentencesToAnalyze.length;
-        if (totalToAnalyze === 0) return;
-
-        const forcedSinoTerms = vocabulary.filter(v => v.isForceSino).map(v => ({ term: v.term, sinoVietnamese: v.sinoVietnamese }));
-        handleChapterUpdate(chapterIndex, { isBatchAnalyzing: true, batchAnalysisProgress: 0 });
-        let analyzedCount = 0;
-
-        for (const sentence of sentencesToAnalyze) {
-            if (stopFlags.current.has(stopKey)) break;
-            
-            handleSentencesUpdate(chapterIndex, [{ index: sentence.originalIndex, update: { analysisState: 'loading' } }]);
-
-            try {
-                const analysisCacheKey = sentence.original;
-                let result: AnalyzedText;
-                if(analysisCache.has(analysisCacheKey)) {
-                    result = analysisCache.get(analysisCacheKey)!;
-                } else {
-                    result = await analyzeSentence(sentence.original, settings.apiKey, forcedSinoTerms);
-                    setAnalysisCache(prev => new Map(prev).set(analysisCacheKey, result));
-                }
-
-                handleSentencesUpdate(chapterIndex, [{ index: sentence.originalIndex, update: { analysisState: 'done', analysisResult: result, displayMode: 'translation' } }]);
-                
-                if (result.specialTerms && result.specialTerms.length > 0) {
-                    const location: VocabularyLocation = {
-                        chapterIndex: chapterIndex,
-                        chapterTitle: chapter.title,
-                        sentenceNumber: sentence.sentenceNumber!,
-                        originalSentence: sentence.original,
-                    };
-                    handleSaveVocabulary(result.specialTerms, location);
-                }
-
-            } catch (err: any) {
-                 handleSentencesUpdate(chapterIndex, [{ index: sentence.originalIndex, update: { analysisState: 'error', analysisError: err.message } }]);
-            }
-
-            analyzedCount++;
-            handleChapterUpdate(chapterIndex, { batchAnalysisProgress: analyzedCount / totalToAnalyze });
-        }
-
-        handleChapterUpdate(chapterIndex, { isBatchAnalyzing: false });
-
-    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate, analysisCache, handleSaveVocabulary, vocabulary, settings.apiKey, checkApiKey]);
-
-    const stopProcess = useCallback((type: 'translate' | 'analyze', chapterIndex: number) => {
-        const file = processedFiles.find(f => f.id === activeFileId);
-        if (file) {
-            const stopKey = `${type}-${file.id}-${chapterIndex}`;
-            stopFlags.current.add(stopKey);
-
-            if (type === 'translate') {
-                handleChapterUpdate(chapterIndex, { isBatchTranslating: false });
-            } else {
-                 handleChapterUpdate(chapterIndex, { isBatchAnalyzing: false });
-            }
-
-            const chapter = file.chapters[chapterIndex];
-            const sentenceUpdates: {index: number, update: Partial<SentenceData>}[] = [];
-            chapter.sentences.forEach((s, i) => {
-                if (s.translationState === 'loading' && type === 'translate') {
-                    sentenceUpdates.push({ index: i, update: { translationState: 'pending' } });
-                }
-                 if (s.analysisState === 'loading' && type === 'analyze') {
-                    sentenceUpdates.push({ index: i, update: { analysisState: 'pending' } });
-                }
+            updateProjectState(projectId, p => {
+                const newChapters = [...p.chapters];
+                const newSentences = [...newChapters[chapterIndex].sentences];
+                newSentences[sentenceIndex] = { ...newSentences[sentenceIndex], ...update };
+                newChapters[chapterIndex] = { ...newChapters[chapterIndex], sentences: newSentences };
+                const newProject = { ...p, chapters: newChapters };
+                saveChapterToDrive(newProject, chapterIndex);
+                return newProject;
             });
-            if (sentenceUpdates.length > 0) {
-                 handleSentencesUpdate(chapterIndex, sentenceUpdates);
-            }
-        }
-    }, [activeFileId, processedFiles, handleChapterUpdate, handleSentencesUpdate]);
-
-    const handleVisibleRangeUpdate = useCallback((newRange: { start: number; end: number }) => {
-         setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id === activeFileId) { return { ...file, visibleRange: newRange }; }
-            return file;
-        }));
-    }, [activeFileId]);
-
-    const handlePageSizeUpdate = useCallback((newSize: number) => {
-        setProcessedFiles(prevFiles => prevFiles.map(file => {
-            if (file.id === activeFileId) {
-                return { ...file, pageSize: newSize, visibleRange: { start: 0, end: Math.min(newSize, file.chapters.length) } };
-            }
-            return file;
-        }));
-    }, [activeFileId]);
-
-    const handleCloseFile = useCallback((fileIdToClose: number) => {
-        setProcessedFiles(prevFiles => {
-            const newFiles = prevFiles.filter(f => f.id !== fileIdToClose);
-            if (activeFileId === fileIdToClose) {
-                setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
-            }
-            return newFiles;
-        });
-
-        // Cleanup refs for the closed file
-        openFileFullCacheRef.current.delete(fileIdToClose);
-        if (debouncedFileSaveRef.current.has(fileIdToClose)) {
-            clearTimeout(debouncedFileSaveRef.current.get(fileIdToClose)!);
-            debouncedFileSaveRef.current.delete(fileIdToClose);
-        }
-    }, [processedFiles, activeFileId]);
-
-    const handleUnifyVocabulary = useCallback(() => {
-        const termsToUnify = vocabulary.filter(v => v.isForceSino && v.vietnameseTranslation);
-        if (termsToUnify.length === 0) {
-            alert("Không có thuật ngữ nào được đánh dấu để đồng nhất.");
-            return;
-        }
-
-        setProcessedFiles(prevFiles => {
-            return prevFiles.map(file => {
-                const newChapters = file.chapters.map(chapter => {
-                    // Only modify loaded chapters
-                    if (!chapter.isLoaded) return chapter;
-
-                    const newSentences = chapter.sentences.map(sentence => {
-                        let newTranslation = sentence.translation;
-                        if (!newTranslation) return sentence;
-
-                        termsToUnify.forEach(term => {
-                            const regex = new RegExp(escapeRegex(term.vietnameseTranslation), 'gi');
-                            newTranslation = newTranslation.replace(regex, term.sinoVietnamese);
-                        });
-                        
-                        return { ...sentence, translation: newTranslation };
-                    });
-                    return { ...chapter, sentences: newSentences };
-                });
-                return { ...file, chapters: newChapters };
-            });
-        });
-
-        alert(`Đã đồng nhất ${termsToUnify.length} thuật ngữ trên toàn bộ văn bản.`);
-    }, [vocabulary]);
-
-    const handleGoToLocation = useCallback((location: VocabularyLocation) => {
-        setIsVocabularyOpen(false);
-        const file = processedFiles.find(f => f.id === activeFileId);
-        if (!file) return;
-
-        const { chapterIndex, sentenceNumber } = location;
-        const pageSize = file.pageSize;
-        const targetPage = Math.floor(chapterIndex / pageSize);
-        const start = targetPage * pageSize;
-        const end = Math.min(start + pageSize, file.chapters.length);
+        };
         
-        // This function will also trigger loading the chapter content if not already loaded
-        handleLoadChapterContent(chapterIndex);
-        
-        handleVisibleRangeUpdate({ start, end });
-        handleChapterUpdate(chapterIndex, { isExpanded: true });
-        
-        setScrollTo({ chapterIndex, sentenceNumber });
-    }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
-    
-    const handleExportData = useCallback(() => {
+        updateSentence({ analysisState: 'loading' });
+
         try {
-            const dataToExport = packMainDataForSave();
-            const jsonString = JSON.stringify(dataToExport, null, 2);
-            const blob = new Blob([jsonString], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `trinh-phan-tich-tieng-trung-backup-${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            alert('Đã tải xuống tệp sao lưu thành công. (Lưu ý: Dữ liệu cache của từng tệp không được bao gồm trong bản sao lưu này)');
-        } catch (err) {
-            console.error('Lỗi khi xuất dữ liệu:', err);
-            alert('Đã xảy ra lỗi khi tạo tệp sao lưu.');
-        }
-    }, [packMainDataForSave]);
+            const forcedSinoTerms = vocabulary
+                .filter(v => v.isForceSino)
+                .map(v => ({ term: v.term, sinoVietnamese: v.sinoVietnamese }));
 
-    const handleImportData = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+            const result = await analyzeSentence(sentence.original, settings.apiKey, forcedSinoTerms);
+            
+            // Add new special terms to vocabulary
+            const newVocabItems: VocabularyItem[] = [];
+            if (result.specialTerms) {
+                for (const specialTerm of result.specialTerms) {
+                    if (!vocabulary.some(v => v.term.toLowerCase() === specialTerm.term.toLowerCase())) {
+                        newVocabItems.push({
+                            ...specialTerm,
+                            firstLocation: {
+                                chapterIndex: chapterIndex,
+                                chapterTitle: project.chapters[chapterIndex].title,
+                                sentenceNumber: sentence.sentenceNumber || 0,
+                                originalSentence: sentence.original,
+                            },
+                            isForceSino: false,
+                        });
+                    }
+                }
+            }
+            if (newVocabItems.length > 0) {
+                 setVocabulary(prev => [...prev, ...newVocabItems]);
+            }
+
+            updateSentence({
+                analysisState: 'done',
+                analysisResult: result,
+                translation: result.translation,
+                translationState: 'done',
+                displayMode: 'detailed-word'
+            });
+
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            updateSentence({ analysisState: 'error', analysisError: message });
+        } finally {
+            setIsApiBusy(false);
+        }
+    }, [checkApiKey, isApiBusy, openProjects, settings.apiKey, vocabulary, updateProjectState, saveChapterToDrive]);
+
+    const handleBatchProcess = async (
+        projectId: string,
+        chapterIndex: number,
+        processType: 'translate' | 'analyze'
+    ) => {
+        if (!checkApiKey() || isApiBusy) return;
+    
+        const project = openProjects.find(p => p.id === projectId);
+        if (!project) return;
+    
+        const chapter = project.chapters[chapterIndex];
+        const taskKey = `${processType}-${projectId}-${chapterIndex}`;
+        stopFlags.current.delete(taskKey);
+    
+        const sentencesToProcess = chapter.sentences
+            .map((s, i) => ({ ...s, originalIndex: i }))
+            .filter(s => !s.isTitle && s[processType === 'translate' ? 'translationState' : 'analysisState'] === 'pending');
+    
+        if (sentencesToProcess.length === 0) return;
+    
+        setIsApiBusy(true);
+        onChapterUpdate(projectId, chapterIndex, {
+            [processType === 'translate' ? 'isBatchTranslating' : 'isBatchAnalyzing']: true,
+            [`batch${processType === 'translate' ? 'Translation' : 'Analysis'}Progress`]: 0
+        });
+    
+        const forcedSinoTerms = vocabulary
+            .filter(v => v.isForceSino)
+            .map(v => ({ term: v.term, sinoVietnamese: v.sinoVietnamese }));
+    
+        let processedCount = 0;
+    
+        for (let i = 0; i < sentencesToProcess.length; i += TRANSLATION_BATCH_SIZE) {
+            if (stopFlags.current.has(taskKey)) break;
+    
+            const batch = sentencesToProcess.slice(i, i + TRANSLATION_BATCH_SIZE);
+            const originalTexts = batch.map(s => s.original);
+    
+            try {
+                if (processType === 'translate') {
+                    const translations = await translateSentencesInBatch(originalTexts, settings.apiKey, forcedSinoTerms);
+                    updateProjectState(projectId, p => {
+                        const newChapters = [...p.chapters];
+                        const newSentences = [...newChapters[chapterIndex].sentences];
+                        translations.forEach((translation, j) => {
+                            const originalSentenceIndex = batch[j].originalIndex;
+                            newSentences[originalSentenceIndex] = {
+                                ...newSentences[originalSentenceIndex],
+                                translation: translation,
+                                translationState: 'done'
+                            };
+                        });
+                        newChapters[chapterIndex] = { ...newChapters[chapterIndex], sentences: newSentences };
+                        return { ...p, chapters: newChapters };
+                    });
+                } else { // Analyze
+                    for(let j=0; j<batch.length; j++) {
+                        if (stopFlags.current.has(taskKey)) break;
+                        const sentence = batch[j];
+                        const result = await analyzeSentence(sentence.original, settings.apiKey, forcedSinoTerms);
+                        updateProjectState(projectId, p => {
+                             const newChapters = [...p.chapters];
+                             const newSentences = [...newChapters[chapterIndex].sentences];
+                             newSentences[sentence.originalIndex] = {
+                                ...newSentences[sentence.originalIndex],
+                                analysisResult: result,
+                                analysisState: 'done',
+                                translation: result.translation,
+                                translationState: 'done',
+                                displayMode: 'detailed-word'
+                             };
+                             newChapters[chapterIndex] = { ...newChapters[chapterIndex], sentences: newSentences };
+                             return { ...p, chapters: newChapters };
+                        });
+                    }
+                }
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                setError({ message });
+                break; // Stop on error
+            } finally {
+                processedCount += batch.length;
+                 onChapterUpdate(projectId, chapterIndex, {
+                    [`batch${processType === 'translate' ? 'Translation' : 'Analysis'}Progress`]: processedCount / sentencesToProcess.length
+                 });
+            }
+        }
+    
+        onChapterUpdate(projectId, chapterIndex, {
+            [processType === 'translate' ? 'isBatchTranslating' : 'isBatchAnalyzing']: false,
+        });
+        saveChapterToDrive(project, chapterIndex);
+        setIsApiBusy(false);
+        stopFlags.current.delete(taskKey);
+    };
+    
+    const handleStopBatchProcess = (projectId: string, chapterIndex: number, processType: 'translate' | 'analyze') => {
+        const taskKey = `${processType}-${projectId}-${chapterIndex}`;
+        stopFlags.current.add(taskKey);
+        onChapterUpdate(projectId, chapterIndex, {
+            [processType === 'translate' ? 'isBatchTranslating' : 'isBatchAnalyzing']: false,
+        });
+        setIsApiBusy(false);
+    };
+
+    const handleDataExport = () => {
+        const data = packMainDataForSave();
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `chinese_analyzer_backup_${new Date().toISOString().split('T')[0]}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const handleDataImport = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
 
@@ -2513,438 +2183,199 @@ const App = () => {
         reader.onload = (e) => {
             try {
                 const text = e.target?.result as string;
-                const parsedData = JSON.parse(text);
-                unpackAndLoadData(parsedData, 'local');
-                setIsDataManagementOpen(false);
-            } catch (err: any) {
-                console.error('Lỗi khi nhập dữ liệu:', err);
-                alert(`Đã xảy ra lỗi khi đọc tệp: ${err.message}`);
-            } finally {
-                if (event.target) event.target.value = '';
+                const parsedData: MainDriveData = JSON.parse(text);
+                if (parsedData.version === '3.0' && parsedData.data) {
+                    setSettings(prev => ({...prev, ...parsedData.data.settings}));
+                    setVocabulary(parsedData.data.vocabulary || []);
+                    alert("Dữ liệu đã được nhập thành công!");
+                } else {
+                    throw new Error("Định dạng tệp sao lưu không hợp lệ hoặc phiên bản quá cũ.");
+                }
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                alert(`Lỗi khi nhập dữ liệu: ${message}`);
             }
         };
         reader.readAsText(file);
-    }, []);
-
-    const handleClearData = useCallback((dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => {
-        const clearVocabulary = () => setVocabulary([]);
-        const clearAnalysisCache = () => setAnalysisCache(new Map());
-        const clearTranslationCache = () => setTranslationCache(new Map());
-        const resetSettings = () => setSettings({
-            apiKey: '',
-            fontSize: 16,
-            hanziFontSize: 24,
-            fontFamily: 'font-sans',
-            theme: 'light',
-            lineHeight: 1.6,
-        });
-
-        switch(dataType) {
-            case 'vocabulary': clearVocabulary(); break;
-            case 'analysisCache': clearAnalysisCache(); break;
-            case 'translationCache': clearTranslationCache(); break;
-            case 'settings': resetSettings(); break;
-            case 'all':
-                clearVocabulary();
-                clearAnalysisCache();
-                clearTranslationCache();
-                resetSettings();
-                setWorkspaceItems([]);
-                // Note: This does not clear individual file caches on Drive.
-                // That would require iterating and deleting, which is a more complex operation.
-                break;
-        }
-        alert(`Đã xóa "${dataType}" thành công.`);
-    }, []);
-
-    const handleAuthClick = () => {
-        if (tokenClient) {
-            tokenClient.requestAccessToken({ prompt: '' });
-        }
-    };
-
-    const handleSignoutClick = () => {
-        const cred = window.gapi.client.getToken();
-        if (cred) {
-            window.google.accounts.oauth2.revoke(cred.access_token, () => {});
-            window.gapi.client.setToken(null);
-        }
-        setIsLoggedIn(false);
-        setGoogleUser(null);
-        setWorkspaceItems([]);
-        setProcessedFiles([]);
-        openFileFullCacheRef.current.clear();
-        debouncedFileSaveRef.current.forEach(timeoutId => clearTimeout(timeoutId));
-        debouncedFileSaveRef.current.clear();
-        setActiveFileId(null);
     };
     
-    const handleLoadChapterContent = useCallback((chapterIndex: number) => {
-        setProcessedFiles(prevFiles => {
-            const fileIndex = prevFiles.findIndex(f => f.id === activeFileId);
-            if (fileIndex === -1) return prevFiles;
-    
-            const file = prevFiles[fileIndex];
-            const chapterToLoad = file.chapters[chapterIndex];
-            if (!chapterToLoad || chapterToLoad.isLoaded || !chapterToLoad.hasContent) {
-                return prevFiles;
-            }
-    
-            const fullCachedFileData = openFileFullCacheRef.current.get(file.id);
-            if (!fullCachedFileData) {
-                console.error("Cache miss for chapter content. This should not happen.");
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = { ...chapterToLoad, isLoaded: true, sentences: [], chapterError: "Lỗi: Không tìm thấy nội dung cache." };
-                const newFiles = [...prevFiles];
-                newFiles[fileIndex] = { ...file, chapters: newChapters };
-                return newFiles;
-            }
-    
-            const fullChapterData = fullCachedFileData.chapters[chapterIndex];
-            if (fullChapterData) {
-                const newChapters = [...file.chapters];
-                newChapters[chapterIndex] = {
-                    ...newChapters[chapterIndex],
-                    sentences: fullChapterData.sentences,
-                    isLoaded: true,
-                };
-                const newFiles = [...prevFiles];
-                newFiles[fileIndex] = { ...file, chapters: newChapters };
-                return newFiles;
-            }
-            
-            return prevFiles;
-        });
-    }, [activeFileId]);
-
-    const handleOpenFileFromWorkspace = async (item: WorkspaceItem) => {
-        // If already open, just switch to it
-        const existingFile = processedFiles.find(f => f.driveFileId === item.driveFileId);
-        if (existingFile) {
-            setActiveFileId(existingFile.id);
-            return;
+    const handleClearData = (type: 'vocabulary' | 'settings' | 'all') => {
+        if (type === 'vocabulary' || type === 'all') {
+            localStorage.removeItem(VOCABULARY_STORAGE_KEY);
+            setVocabulary([]);
         }
-
-        setIsLoading(true);
-        setError(null);
-        try {
-            // Attempt to load the dedicated cache file for this project
-            const loadedCache = await driveService.loadJsonFileFromAppFolder(`${item.driveFileId}.cache.json`);
-            
-            let newFile: ProcessedFile;
-            let fileCacheForRef: FileCache;
-            const newFileId = Date.now();
-
-            if (loadedCache) {
-                // Cache exists, load from it with lazy chapters
-                fileCacheForRef = loadedCache;
-                const lazyChapters = fileCacheForRef.chapters.map(ch => ({
-                    ...ch,
-                    sentences: [], // IMPORTANT: Start with empty sentences to save memory
-                    isLoaded: false,
-                    hasContent: ch.sentences && ch.sentences.length > 0,
-                }));
-        
-                newFile = {
-                    id: newFileId,
-                    fileName: fileCacheForRef.fileName,
-                    chapters: lazyChapters,
-                    visibleRange: fileCacheForRef.visibleRange || { start: 0, end: Math.min(PAGE_SIZE, lazyChapters.length) },
-                    pageSize: fileCacheForRef.pageSize || PAGE_SIZE,
-                    driveFileId: item.driveFileId,
-                    type: fileCacheForRef.type,
-                    lastModified: fileCacheForRef.lastModified,
-                    originalContent: '', // Not needed immediately, we have the cache
-                };
-            } else {
-                // No cache file, this is the first time opening it. Fetch original and process.
-                const content = await driveService.fetchFileContent(item.driveFileId, item.type === 'file' ? undefined : 'text/plain');
-                const chapters = processTextIntoChapters(content);
-                newFile = {
-                    id: newFileId,
-                    fileName: item.name,
-                    originalContent: content,
-                    chapters, // Not lazy this time, as it's freshly processed
-                    visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
-                    pageSize: PAGE_SIZE,
-                    driveFileId: item.driveFileId,
-                    type: item.type,
-                    lastModified: new Date().toISOString(),
-                };
-                
-                // Create the initial cache data for saving
-                const { id, originalContent: _oc, ...rest } = newFile;
-                fileCacheForRef = rest;
-            }
-
-            // Store the full cache data in the ref for this open file
-            openFileFullCacheRef.current.set(newFileId, fileCacheForRef);
-            
-            // Update state to show the file
-            setProcessedFiles(prev => [...prev, newFile]);
-            setActiveFileId(newFileId);
-
-        } catch (err: any) {
-            setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
-        } finally {
-            setIsLoading(false);
+        if (type === 'settings' || type === 'all') {
+             localStorage.removeItem(SETTINGS_STORAGE_KEY);
+             setSettings({
+                apiKey: '', fontSize: 16, hanziFontSize: 24,
+                fontFamily: 'font-sans', theme: 'light', lineHeight: 1.6,
+             });
         }
+        alert("Dữ liệu cục bộ đã được xóa.");
     };
 
-    const handleDeleteWorkspaceItem = async (itemToDelete: WorkspaceItem, deleteFromDrive: boolean) => {
-        if (deleteFromDrive) {
-            if (!window.confirm(`BẠN CÓ CHẮC MUỐN XÓA VĨNH VIỄN TỆP "${itemToDelete.name}" KHỎI GOOGLE DRIVE KHÔNG? Hành động này không thể hoàn tác.`)) {
-                return;
+    const handleUpdateVocabularyItem = (originalTerm: string, updatedItem: VocabularyItem) => {
+        setVocabulary(prev => prev.map(item => item.term === originalTerm ? updatedItem : item));
+    };
+
+    const handleDeleteVocabularyItem = (term: string) => {
+        setVocabulary(prev => prev.filter(item => item.term !== term));
+    };
+    
+    const handleToggleForceSino = (term: string) => {
+        setVocabulary(prev => prev.map(item => item.term === term ? { ...item, isForceSino: !item.isForceSino } : item));
+    };
+    
+    const handleGoToLocation = (location: VocabularyLocation) => {
+        const project = openProjects.find(p => p.chapters.some(c => c.title === location.chapterTitle));
+        if (project) {
+            setActiveProjectId(project.id);
+            const chapterIndex = location.chapterIndex;
+            
+            onChapterUpdate(project.id, chapterIndex, { isExpanded: true });
+            
+            if (!project.chapters[chapterIndex].isLoaded) {
+                 handleLoadChapterContent(project.id, chapterIndex);
             }
-            setIsLoading(true);
-            setError(null);
-            try {
-                // Delete original file AND its cache file in parallel
-                await Promise.all([
-                    driveService.deleteFileFromDrive(itemToDelete.driveFileId),
-                    driveService.deleteJsonFileInAppFolder(`${itemToDelete.driveFileId}.cache.json`)
-                ]);
-            } catch (err: any) {
-                setError({ message: `Lỗi khi xóa tệp trên Drive: ${err.message}` });
-                setIsLoading(false);
-                return;
-            } finally {
-                setIsLoading(false);
-            }
+            
+            const start = Math.floor(chapterIndex / project.pageSize) * project.pageSize;
+            const end = start + project.pageSize;
+            updateProjectState(project.id, p => ({ ...p, visibleRange: {start: start, end: end} }));
+
+            setScrollTo({ chapterIndex: chapterIndex, sentenceNumber: location.sentenceNumber });
+            setIsVocabularyOpen(false);
         } else {
-            if (!window.confirm(`Bạn có chắc muốn xóa "${itemToDelete.name}" khỏi không gian làm việc không? Tệp gốc trên Drive và cache của nó sẽ không bị ảnh hưởng.`)) {
-                return;
-            }
+            alert("Không thể tìm thấy dự án hoặc chương tương ứng. Vui lòng mở dự án đó trước.");
         }
+    };
     
-        // Close tab if it's open
-        const fileToRemove = processedFiles.find(f => f.driveFileId === itemToDelete.driveFileId);
-        if (fileToRemove) {
-            handleCloseFile(fileToRemove.id);
-        }
-    
-        // Remove from workspace list
-        setWorkspaceItems(prev => prev.filter(item => item.driveFileId !== itemToDelete.driveFileId));
+    const handleUnifyTranslations = () => {
+        // This is a placeholder for a potentially complex feature
+        alert("Tính năng đồng nhất bản dịch đang được phát triển.");
     };
 
-    const handleOpenFileFromDrivePicker = (_event?: React.MouseEvent) => {
-        const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
-        const token = window.gapi.client.getToken();
-
-        if (!isLoggedIn || !token) {
-            setError({ message: "Vui lòng đăng nhập bằng tài khoản Google trước." });
-            return;
-        }
-        if (!GOOGLE_API_KEY) {
-            setError({ message: "Lỗi cấu hình: VITE_API_KEY chưa được thiết lập." });
-            return;
-        }
-    
-        const view = new window.google.picker.DocsView()
-            .setMimeTypes("application/vnd.google-apps.document,text/plain");
-    
-        const picker = new window.google.picker.PickerBuilder()
-            .addView(view)
-            .setOAuthToken(token.access_token)
-            .setDeveloperKey(GOOGLE_API_KEY)
-            .setCallback(async (data: any) => {
-                if (data.action === window.google.picker.Action.PICKED) {
-                    const file = data.docs[0];
-                    setIsLoading(true);
-                    setError(null);
-                    try {
-                        const content = await driveService.fetchFileContent(file.id, file.mimeType);
-                        await handleCreateNewWorkspaceItem(content, file.name, 'file');
-                    } catch (err: any) {
-                        setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
-                    } finally {
-                        setIsLoading(false);
-                    }
-                }
-            })
-            .build();
-        picker.setVisible(true);
-    };
-
-    const handleAddNewFile = useCallback(() => { setActiveFileId(null); }, []);
-
-    const activeFile = processedFiles.find(f => f.id === activeFileId);
+    const activeProject = openProjects.find(p => p.id === activeProjectId);
     const themeClasses = getThemeClasses(settings.theme);
 
+    if (isLoading && !activeProject) {
+        return (
+            <div className={`w-screen h-screen flex flex-col items-center justify-center ${themeClasses.mainBg} ${themeClasses.text}`}>
+                <Spinner variant={settings.theme === 'light' ? 'dark' : 'light'} />
+                <p className="mt-4 font-semibold">{loadingMessage}</p>
+            </div>
+        );
+    }
+    
     return (
-        <SettingsContext.Provider value={{ settings, setSettings, theme: themeClasses, vocabulary }}>
-            <div 
-                className={`min-h-screen transition-colors duration-300 ${themeClasses.mainBg} ${themeClasses.text} ${settings.fontFamily}`}
-                style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}
-            >
+        <SettingsContext.Provider value={{ settings, theme: themeClasses, setSettings, vocabulary }}>
+            <div className={`flex flex-col h-screen ${themeClasses.mainBg} ${themeClasses.text} ${settings.fontFamily}`} style={{fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}>
+                {/* Modals */}
+                <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
                 <VocabularyModal 
                     isOpen={isVocabularyOpen}
-                    onClose={() => setIsVocabularyOpen(false)} 
-                    vocabulary={vocabulary} 
+                    onClose={() => setIsVocabularyOpen(false)}
+                    vocabulary={vocabulary}
                     onDelete={handleDeleteVocabularyItem}
                     onToggleForceSino={handleToggleForceSino}
                     onUpdate={handleUpdateVocabularyItem}
                     onGoToLocation={handleGoToLocation}
-                    onUnify={handleUnifyVocabulary}
+                    onUnify={handleUnifyTranslations}
                 />
-                <CacheLibraryModal 
-                    isOpen={isCacheLibraryOpen} 
-                    onClose={() => setIsCacheLibraryOpen(false)} 
-                    analysisCache={analysisCache}
-                    translationCache={translationCache}
-                    onDeleteAnalysis={(key) => setAnalysisCache(prev => { const n = new Map(prev); n.delete(key); return n; })}
-                    onDeleteTranslation={(key) => setTranslationCache(prev => { const n = new Map(prev); n.delete(key); return n; })}
-                />
-                <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
                 <DataManagementModal
                     isOpen={isDataManagementOpen}
                     onClose={() => setIsDataManagementOpen(false)}
-                    onExport={handleExportData}
-                    onImport={handleImportData}
+                    onExport={handleDataExport}
+                    onImport={handleDataImport}
                     onClear={handleClearData}
                     googleApiStatus={googleApiStatus}
                     isLoggedIn={isLoggedIn}
-                    onLogin={handleAuthClick}
+                    onLogin={handleLogin}
+                    onLogout={handleLogout}
                 />
 
-                <header className={`${themeClasses.cardBg}/80 backdrop-blur-lg border-b ${themeClasses.border} sticky top-0 z-20`}>
-                    <div className="container mx-auto px-4 py-3 flex justify-between items-center">
-                        <h1 className="text-xl md:text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-cyan-500">
-                            Trình Phân Tích Tiếng Trung
-                        </h1>
-                         <div className="flex items-center gap-2 md:gap-4">
-                              <button onClick={() => setIsVocabularyOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở từ điển">
-                                <BookOpenIcon className="w-6 h-6" />
-                            </button>
-                             <button onClick={() => setIsCacheLibraryOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Mở thư viện cache">
-                                <ArchiveBoxIcon className="w-6 h-6" />
-                            </button>
-                            <button onClick={() => setIsDataManagementOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Quản lý Dữ liệu (Sao lưu/Khôi phục)">
-                                <BookmarkSquareIcon className="w-6 h-6" />
-                            </button>
-                             
-                            {isLoggedIn && googleUser ? (
-                                <div className="relative" ref={userMenuRef}>
-                                    <button
-                                        onClick={() => setIsUserMenuOpen(o => !o)}
-                                        className="w-8 h-8 rounded-full overflow-hidden transition-all duration-200 ring-2 ring-transparent hover:ring-blue-500 focus:ring-blue-500"
-                                        title="Tài khoản người dùng"
-                                    >
-                                        <img src={googleUser.picture} alt="User avatar" className="w-full h-full object-cover" />
-                                    </button>
-
-                                    {isUserMenuOpen && (
-                                        <div className={`absolute top-full right-0 mt-2 w-64 ${themeClasses.cardBg} border ${themeClasses.border} rounded-lg shadow-xl z-10`}>
-                                            <div className="p-3">
-                                                <p className="font-semibold truncate" title={googleUser.name}>{googleUser.name}</p>
-                                                <p className={`text-sm ${themeClasses.mutedText} truncate`} title={googleUser.email}>{googleUser.email}</p>
-                                            </div>
-                                            <div className={`my-0 h-px ${themeClasses.mainBg}`}></div>
-                                            <div className="p-1">
-                                                <button
-                                                    onClick={() => {
-                                                        handleSignoutClick();
-                                                        setIsUserMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-3 p-2 rounded-md ${themeClasses.hoverBg} text-red-500 dark:text-red-400 font-semibold transition-colors`}
-                                                >
-                                                    <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                                                    <span>Đăng xuất</span>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            ) : null}
-
-                             <a href="https://github.com/google/genai-js" target="_blank" rel="noopener noreferrer" className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors hidden md:block`}>
-                                <GithubIcon className="w-6 h-6" />
-                            </a>
-                        </div>
-                    </div>
-                     {isApiBusy && currentTaskDescription && (
-                        <div className="bg-blue-500/10 text-blue-800 dark:text-blue-300 text-xs text-center py-1 flex items-center justify-center gap-2">
-                            <Spinner variant="dark" />
-                            <span>{currentTaskDescription} (Hàng đợi: {taskQueue.length})</span>
-                        </div>
-                    )}
+                <header className={`flex-shrink-0 border-b ${themeClasses.border} px-4 py-2 flex justify-between items-center`}>
+                    <h1 className="text-xl font-bold flex items-center gap-2">
+                        <BookOpenIcon className="w-6 h-6"/> Trình Phân Tích Tiếng Trung
+                    </h1>
+                     <div className="flex items-center gap-2">
+                         {isLoggedIn && googleUser ? (
+                             <div className="relative" ref={userMenuRef}>
+                                 <button onClick={() => setIsUserMenuOpen(o => !o)} className="flex items-center gap-2 p-1 rounded-full hover:bg-slate-200 dark:hover:bg-gray-700">
+                                     <img src={googleUser.picture} alt={googleUser.name} className="w-8 h-8 rounded-full"/>
+                                     <ChevronDownIcon className="w-4 h-4" />
+                                 </button>
+                                 {isUserMenuOpen && (
+                                     <div className={`absolute top-full right-0 mt-2 w-56 ${themeClasses.cardBg} border ${themeClasses.border} rounded-md shadow-lg z-20`}>
+                                         <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+                                             <p className="font-semibold truncate">{googleUser.name}</p>
+                                             <p className={`text-sm ${themeClasses.mutedText} truncate`}>{googleUser.email}</p>
+                                         </div>
+                                         <button onClick={handleLogout} className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:${themeClasses.hoverBg}`}>
+                                            <ArrowRightOnRectangleIcon className="w-5 h-5"/> Đăng xuất
+                                         </button>
+                                     </div>
+                                 )}
+                             </div>
+                         ) : (
+                             <button onClick={() => setIsDataManagementOpen(true)} className={`flex items-center gap-2 px-3 py-1.5 font-semibold rounded-lg shadow-sm ${themeClasses.button.bg} ${themeClasses.button.text} ${themeClasses.button.hoverBg}`}>
+                                <GoogleIcon className="w-5 h-5" /> Đăng nhập
+                             </button>
+                         )}
+                         <button onClick={() => setIsVocabularyOpen(true)} className={`p-2 rounded-full hover:bg-slate-200 dark:hover:bg-gray-700`} title="Từ điển"><StarIcon className="w-5 h-5"/></button>
+                         <button onClick={() => setIsDataManagementOpen(true)} className={`p-2 rounded-full hover:bg-slate-200 dark:hover:bg-gray-700`} title="Quản lý dữ liệu"><ArchiveBoxIcon className="w-5 h-5"/></button>
+                         <button onClick={() => setIsSettingsOpen(o => !o)} className={`p-2 rounded-full hover:bg-slate-200 dark:hover:bg-gray-700`} title="Cài đặt"><SettingsIcon className="w-5 h-5"/></button>
+                     </div>
                 </header>
 
-                <main className="container mx-auto p-4 md:p-8">
-                    <div className="max-w-5xl mx-auto">
-                        {processedFiles.length > 0 && <WorkspaceTabs 
-                            files={processedFiles}
-                            activeFileId={activeFileId}
-                            onSelectTab={setActiveFileId}
-                            onCloseTab={handleCloseFile}
-                            onAddNew={handleAddNewFile}
-                        />}
-                        
+                <main className="flex-grow flex flex-col overflow-y-hidden">
+                    {openProjects.length > 0 && (
+                        <WorkspaceTabs 
+                            projects={openProjects} 
+                            activeProjectId={activeProjectId} 
+                            onSelectProject={setActiveProjectId}
+                            onCloseProject={handleCloseProject}
+                            onGoToDashboard={() => setActiveProjectId(null)}
+                        />
+                    )}
+
+                    <div className="flex-grow overflow-y-auto p-4 md:p-6 lg:p-8">
                         {error && (
-                            <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow" role="alert">
-                                <div className="flex justify-between items-center">
-                                   <div>
-                                        <p className="font-bold">Lỗi</p>
-                                        <p>{error.message}</p>
-                                   </div>
-                                   <button onClick={() => setError(null)} className="p-1 rounded-full hover:bg-red-200">
-                                        <CloseIcon className="w-5 h-5"/>
-                                   </button>
-                                </div>
+                             <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+                                <strong className="font-bold">Lỗi!</strong>
+                                <span className="block sm:inline ml-2">{error.message}</span>
+                                <span className="absolute top-0 bottom-0 right-0 px-4 py-3" onClick={() => setError(null)}>
+                                    <CloseIcon className="w-6 h-6 text-red-500"/>
+                                </span>
                             </div>
                         )}
-
-                        {!activeFile ? (
-                            <div className="mt-4">
-                                {isLoggedIn ? (
-                                    <WorkspaceDashboard
-                                        items={workspaceItems}
-                                        onOpenItem={handleOpenFileFromWorkspace}
-                                        onDeleteItem={handleDeleteWorkspaceItem}
-                                        onNewText={(text, name) => handleCreateNewWorkspaceItem(text, name, 'text')}
-                                        onNewFile={(text, name) => handleCreateNewWorkspaceItem(text, name, 'file')}
-                                        onOpenDrivePicker={handleOpenFileFromDrivePicker}
-                                        isLoading={isLoading}
-                                    />
-                                ) : (
-                                     <InputArea
-                                        onProcess={(text, name) => handleCreateNewWorkspaceItem(text, name, 'text')}
-                                        isLoading={isLoading}
-                                        isLoggedIn={isLoggedIn}
-                                    />
-                                )}
-                            </div>
+                        
+                         {activeProject ? (
+                            <ProjectDisplay 
+                                projectData={activeProject}
+                                onSentenceClick={(chapterIndex, sentenceIndex) => handleSentenceClick(activeProject.id, chapterIndex, sentenceIndex)}
+                                onVisibleRangeUpdate={(newRange) => updateProjectState(activeProject.id, p => ({ ...p, visibleRange: newRange }))}
+                                onPageSizeUpdate={(newSize) => updateProjectState(activeProject.id, p => ({ ...p, pageSize: newSize, visibleRange: { start: 0, end: newSize } }))}
+                                onChapterTranslate={(chapterIndex) => handleBatchProcess(activeProject.id, chapterIndex, 'translate')}
+                                onChapterStopTranslate={(chapterIndex) => handleStopBatchProcess(activeProject.id, chapterIndex, 'translate')}
+                                onChapterAnalyze={(chapterIndex) => handleBatchProcess(activeProject.id, chapterIndex, 'analyze')}
+                                onChapterStopAnalyze={(chapterIndex) => handleStopBatchProcess(activeProject.id, chapterIndex, 'analyze')}
+                                onChapterUpdate={(chapterIndex, update) => onChapterUpdate(activeProject.id, chapterIndex, update)}
+                                onChapterLoadContent={(chapterIndex) => handleLoadChapterContent(activeProject.id, chapterIndex)}
+                                isApiBusy={isApiBusy}
+                            />
                         ) : (
-                           <div className="mt-4">
-                               <FileDisplay 
-                                    fileData={activeFile} 
-                                    onSentenceClick={(ci, si) => handleIndividualSentenceAnalysis(ci, si)}
-                                    onVisibleRangeUpdate={handleVisibleRangeUpdate}
-                                    onPageSizeUpdate={handlePageSizeUpdate}
-                                    onChapterTranslate={handleTranslateChapter}
-                                    onChapterStopTranslate={(ci) => stopProcess('translate', ci)}
-                                    onChapterAnalyze={(ci) => setTaskQueue(prev => [...prev, {id: `analyze-seq-${activeFile.id}-${ci}`, description: `Phân tích chương #${ci+1}`, action: () => handleAnalyzeChapterSequentially(ci)}])}
-                                    onChapterStopAnalyze={(ci) => stopProcess('analyze', ci)}
-                                    onChapterUpdate={handleChapterUpdate}
-                                    onChapterLoadContent={handleLoadChapterContent}
-                                    isApiBusy={isApiBusy}
-                               />
-                           </div>
+                           <WorkspaceDashboard
+                                projects={workspaceProjects}
+                                onOpenProject={handleOpenWorkspaceItem}
+                                onDeleteProject={handleDeleteProject}
+                                onNewText={handleCreateNewProject}
+                                onNewFile={handleCreateNewProject}
+                                isLoading={isLoading}
+                                isLoggedIn={isLoggedIn}
+                           />
                         )}
                     </div>
                 </main>
-                
-                <footer className={`text-center py-6 text-sm ${themeClasses.mutedText}`}>
-                    <p>Cung cấp bởi Gemini API. Được thiết kế cho mục đích học tập.</p>
-                </footer>
-
-                 <button
-                    onClick={() => setIsSettingsOpen(o => !o)}
-                    className="fixed bottom-4 right-4 w-12 h-12 bg-slate-700/50 text-white hover:bg-slate-700/80 backdrop-blur-sm rounded-full flex items-center justify-center shadow-lg z-30 transition-all"
-                    title="Cài đặt giao diện"
-                >
-                    <SettingsIcon className="w-6 h-6" />
-                </button>
             </div>
         </SettingsContext.Provider>
     );

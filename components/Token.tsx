@@ -1,11 +1,12 @@
 
 
+
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { GRAMMAR_COLOR_MAP } from '../constants';
 import type { TokenData } from '../types';
 import { GrammarRole } from '../types';
-import { useSettings } from '../App';
+import { useSettings } from '../contexts/settingsContext';
 import { CloseIcon } from './common/icons';
 
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;

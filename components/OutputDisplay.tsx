@@ -1,10 +1,11 @@
 
 
+
 import React from 'react';
 import type { AnalyzedText } from '../types';
 import { Token } from './Token';
 import { CopyIcon } from './common/icons';
-import { useSettings } from '../App';
+import { useSettings } from '../contexts/settingsContext';
 
 
 const CopyButton: React.FC<{ textToCopy: string; className?: string; children: React.ReactNode }> = ({ textToCopy, className, children }) => {
