@@ -69,6 +69,8 @@ export interface ProcessedFile {
     };
     pageSize: number;
     driveFileId?: string; // ID of the file on Google Drive
+    lastModified: string;
+    type: 'file' | 'text';
 }
 
 export interface WorkspaceItem {

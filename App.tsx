@@ -43,6 +43,7 @@ type GoogleApiStatus = {
   message: string;
 };
 
+type FileCache = Omit<ProcessedFile, 'id' | 'originalContent'>;
 
 // --- Theme & Settings ---
 const getThemeClasses = (theme: Theme) => {
@@ -1609,7 +1610,7 @@ const DataManagementModal: React.FC<{
             analysisCache: "Bạn có chắc chắn muốn xóa toàn bộ cache phân tích không?",
             translationCache: "Bạn có chắc chắn muốn xóa toàn bộ cache dịch không?",
             settings: "Bạn có chắc chắn muốn đặt lại cài đặt giao diện về mặc định không?",
-            all: "BẠN CÓ CHẮC CHẮN MUỐN XÓA TẤT CẢ DỮ LIỆU ỨNG DỤNG KHÔNG? Bao gồm từ điển, cache và cài đặt. Hành động này không thể hoàn tác.",
+            all: "BẠN CÓ CHẮC CHẮN MUỐN XÓA TẤT CẢ DỮ LIỆU ỨNG DỤNG KHÔNG? Bao gồm không gian làm việc, cache tệp, từ điển, cache và cài đặt. Hành động này không thể hoàn tác.",
         };
         if (window.confirm(messages[type])) {
             onClear(type);
@@ -1632,7 +1633,7 @@ const DataManagementModal: React.FC<{
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><GoogleIcon className="w-5 h-5" />Google Drive</h3>
                         <p className={`text-sm ${theme.mutedText}`}>
-                            Toàn bộ dữ liệu của bạn, bao gồm không gian làm việc, từ điển và cache, được tự động sao lưu vào Google Drive khi bạn đăng nhập.
+                            Toàn bộ dữ liệu của bạn, bao gồm không gian làm việc, cache tệp, từ điển và cache, được tự động sao lưu vào Google Drive khi bạn đăng nhập.
                         </p>
                         {!isLoggedIn && (
                              <>
@@ -1660,7 +1661,7 @@ const DataManagementModal: React.FC<{
 
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><DownloadIcon className="w-5 h-5"/>Sao lưu cục bộ (Tệp)</h3>
-                        <p className={`text-sm ${theme.mutedText}`}>Tải xuống một bản sao lưu toàn bộ dữ liệu của bạn (không gian làm việc, từ điển, cache) vào một tệp JSON.</p>
+                        <p className={`text-sm ${theme.mutedText}`}>Tải xuống một bản sao lưu toàn bộ dữ liệu của bạn (không gian làm việc, cache tệp, từ điển, cache) vào một tệp JSON.</p>
                         <button onClick={onExport} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
                             Tải xuống tệp sao lưu
                         </button>
@@ -1715,6 +1716,8 @@ const App = () => {
     const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([]);
     const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]); // In-memory active files
     const [activeFileId, setActiveFileId] = useState<number | null>(null);
+    const [filesCache, setFilesCache] = useState<Map<string, FileCache>>(new Map());
+
 
     // UI & Error State
     const [isLoading, setIsLoading] = useState(false);
@@ -1769,6 +1772,26 @@ const App = () => {
     useEffect(() => { localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries()))); }, [translationCache]);
     useEffect(() => { localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary)); }, [vocabulary]);
 
+    // This effect syncs changes from open files (processedFiles) into the persistent filesCache
+    useEffect(() => {
+        setFilesCache(prevCache => {
+            const updatedCache = new Map(prevCache);
+            let hasChanges = false;
+            processedFiles.forEach(file => {
+                if (file.driveFileId) {
+                    const { id, originalContent, ...rest } = file;
+                    // A quick check to see if the object has actually changed before updating
+                    if (JSON.stringify(rest) !== JSON.stringify(updatedCache.get(file.driveFileId))) {
+                        updatedCache.set(file.driveFileId, rest);
+                        hasChanges = true;
+                    }
+                }
+            });
+            return hasChanges ? updatedCache : prevCache;
+        });
+    }, [processedFiles]);
+
+
     // Auto-save to Drive (debounced)
     useEffect(() => {
         if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
@@ -1786,19 +1809,21 @@ const App = () => {
         return () => {
             if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
         };
-    }, [isLoggedIn, googleApiStatus, settings, vocabulary, analysisCache, translationCache, workspaceItems]);
+    }, [isLoggedIn, googleApiStatus, settings, vocabulary, analysisCache, translationCache, workspaceItems, filesCache]);
 
     const unpackAndLoadData = (data: any, from: 'local' | 'drive') => {
         if (!data || !data.version || !data.data) {
             if (from === 'drive') alert("Không tìm thấy dữ liệu sao lưu hợp lệ trên Drive.");
             return;
         }
-        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems } = data.data;
+        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems, filesCache: loadedFilesCache } = data.data;
         if (settings) setSettings(settings);
         if (vocabulary) setVocabulary(vocabulary);
         if (analysisCache) setAnalysisCache(new Map(analysisCache));
         if (translationCache) setTranslationCache(new Map(translationCache));
         if (loadedWorkspaceItems) setWorkspaceItems(loadedWorkspaceItems);
+        if (loadedFilesCache) setFilesCache(new Map(loadedFilesCache));
+
         if (from === 'drive') {
             // No need to open all files, just show the dashboard
             setActiveFileId(null);
@@ -1948,7 +1973,7 @@ const App = () => {
     }, [settings.apiKey]);
 
 
-    const handleProcessAndOpenFile = useCallback((text: string, fileName: string, driveFileId?: string) => {
+    const handleProcessAndOpenFile = useCallback((text: string, fileName: string, fileInfo: { driveFileId?: string; type: 'file' | 'text' }) => {
         if (!text.trim()) {
             setError({ message: "Nội dung tệp trống." });
             return;
@@ -1966,19 +1991,21 @@ const App = () => {
                 }
                 
                 const newFile: ProcessedFile = {
-                    id: driveFileId ? Date.now() + Math.random() : Date.now(), // Ensure local files have unique IDs
+                    id: fileInfo.driveFileId ? Date.now() + Math.random() : Date.now(), // Ensure local files have unique IDs
                     fileName,
                     originalContent: text,
                     chapters,
                     visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
                     pageSize: PAGE_SIZE,
-                    driveFileId,
+                    driveFileId: fileInfo.driveFileId,
+                    type: fileInfo.type,
+                    lastModified: new Date().toISOString(),
                 };
                 
                 setProcessedFiles(prev => {
                     // Prevent opening the same Drive file multiple times
-                    if (driveFileId && prev.some(f => f.driveFileId === driveFileId)) {
-                        setActiveFileId(prev.find(f => f.driveFileId === driveFileId)!.id);
+                    if (fileInfo.driveFileId && prev.some(f => f.driveFileId === fileInfo.driveFileId)) {
+                        setActiveFileId(prev.find(f => f.driveFileId === fileInfo.driveFileId)!.id);
                         return prev;
                     }
                     return [...prev, newFile]
@@ -1999,8 +2026,10 @@ const App = () => {
             return;
         }
 
+        const fileInfo = { type };
+
         if (!isLoggedIn) {
-            handleProcessAndOpenFile(text, fileName);
+            handleProcessAndOpenFile(text, fileName, fileInfo);
             return;
         }
 
@@ -2015,7 +2044,7 @@ const App = () => {
                 lastModified: new Date().toISOString(),
             };
             setWorkspaceItems(prev => [newWorkspaceItem, ...prev.filter(item => item.driveFileId !== driveFileId)]);
-            handleProcessAndOpenFile(text, fileName, driveFileId);
+            handleProcessAndOpenFile(text, fileName, { driveFileId, type });
         } catch(e: any) {
             setError({ message: `Lỗi khi tạo tệp trên Drive: ${e.message}`});
         } finally {
@@ -2384,7 +2413,7 @@ const App = () => {
     }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
     
     const packDataForExport = () => ({
-        version: '1.2',
+        version: '1.3',
         createdAt: new Date().toISOString(),
         data: {
             settings,
@@ -2392,6 +2421,7 @@ const App = () => {
             analysisCache: Array.from(analysisCache.entries()),
             translationCache: Array.from(translationCache.entries()),
             workspaceItems,
+            filesCache: Array.from(filesCache.entries()),
         }
     });
     
@@ -2413,7 +2443,7 @@ a.click();
             console.error('Lỗi khi xuất dữ liệu:', err);
             alert('Đã xảy ra lỗi khi tạo tệp sao lưu.');
         }
-    }, [settings, vocabulary, analysisCache, translationCache, workspaceItems]);
+    }, [settings, vocabulary, analysisCache, translationCache, workspaceItems, filesCache]);
 
     const handleImportData = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -2440,6 +2470,7 @@ a.click();
         const clearVocabulary = () => setVocabulary([]);
         const clearAnalysisCache = () => setAnalysisCache(new Map());
         const clearTranslationCache = () => setTranslationCache(new Map());
+        const clearFilesCache = () => setFilesCache(new Map());
         const resetSettings = () => setSettings({
             apiKey: '',
             fontSize: 16,
@@ -2458,6 +2489,7 @@ a.click();
                 clearVocabulary();
                 clearAnalysisCache();
                 clearTranslationCache();
+                clearFilesCache();
                 resetSettings();
                 setWorkspaceItems([]);
                 break;
@@ -2481,6 +2513,7 @@ a.click();
         setGoogleUser(null);
         setWorkspaceItems([]);
         setProcessedFiles([]);
+        setFilesCache(new Map());
         setActiveFileId(null);
     };
     
@@ -2492,11 +2525,25 @@ a.click();
             return;
         }
 
+        // Check our new cache first!
+        const cachedFileData = filesCache.get(item.driveFileId);
+        if (cachedFileData) {
+            const newFile: ProcessedFile = {
+                id: Date.now() + Math.random(),
+                ...cachedFileData,
+                originalContent: '', // Not needed immediately, we have sentence.original
+            };
+            setProcessedFiles(prev => [...prev, newFile]);
+            setActiveFileId(newFile.id);
+            return;
+        }
+
+        // Not in cache, proceed with the original flow (fetch from Drive)
         setIsLoading(true);
         setError(null);
         try {
             const content = await driveService.fetchFileContent(item.driveFileId);
-            handleProcessAndOpenFile(content, item.name, item.driveFileId);
+            handleProcessAndOpenFile(content, item.name, { driveFileId: item.driveFileId, type: item.type });
         } catch (err: any) {
             setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
         } finally {
@@ -2531,6 +2578,15 @@ a.click();
         if (fileToRemove) {
             handleCloseFile(fileToRemove.id);
         }
+
+        // Remove from cache
+        setFilesCache(prevCache => {
+            const newCache = new Map(prevCache);
+            if (itemToDelete.driveFileId) {
+                newCache.delete(itemToDelete.driveFileId);
+            }
+            return newCache;
+        });
     
         // Remove from workspace list
         setWorkspaceItems(prev => prev.filter(item => item.driveFileId !== itemToDelete.driveFileId));
