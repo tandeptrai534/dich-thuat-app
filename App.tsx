@@ -2281,8 +2281,13 @@ const App = () => {
     const handleOpenFileFromDrive = () => {
         const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
         const token = window.gapi.client.getToken();
-        if (!isLoggedIn || !token || !GOOGLE_API_KEY) {
-            alert("Lỗi: Cần đăng nhập và cấu hình Google API để sử dụng tính năng này.");
+
+        if (!isLoggedIn || !token) {
+            setError({ message: "Vui lòng đăng nhập bằng tài khoản Google trước khi sử dụng tính năng này." });
+            return;
+        }
+        if (!GOOGLE_API_KEY) {
+            setError({ message: "Lỗi cấu hình: VITE_API_KEY chưa được thiết lập. Tính năng này cần API Key của Google Cloud để hoạt động. Vui lòng xem hướng dẫn cài đặt." });
             return;
         }
     
