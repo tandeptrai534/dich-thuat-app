@@ -1,9 +1,4 @@
 
-
-
-
-
-
 export interface ApiError {
     message: string;
 }
@@ -74,13 +69,15 @@ export interface ProcessedFile {
     };
     pageSize: number;
     driveFileId?: string; // ID of the file on Google Drive
-    isSyncedWithDrive?: boolean; // True if the file is from Drive or has been saved to Drive
 }
 
-export interface DriveSyncedFile {
-    id: string; // Google Drive File ID
+export interface WorkspaceItem {
+    driveFileId: string;
     name: string;
+    type: 'file' | 'text';
+    lastModified: string;
 }
+
 
 // --- App Settings ---
 export type Theme = 'light' | 'dark' | 'sepia';

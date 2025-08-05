@@ -1,3 +1,4 @@
+
 // A service to interact with the Google Drive API.
 // Handles finding the app's data file, creating it if it doesn't exist,
 // and updating/reading its content.
@@ -137,7 +138,7 @@ export async function loadDataFromDrive(): Promise<any | null> {
  * @param mimeType The MIME type of the file.
  * @returns A promise that resolves with the text content of the file.
  */
-export async function fetchFileContent(fileId: string, mimeType: string): Promise<string> {
+export async function fetchFileContent(fileId: string, mimeType?: string): Promise<string> {
     try {
         if (mimeType === 'application/vnd.google-apps.document') {
             const accessToken = window.gapi.client.getToken()?.access_token;
@@ -203,4 +204,21 @@ export async function createFileInDrive(fileName: string, content: string): Prom
 
     const result = await response.json();
     return result.id;
+}
+
+
+/**
+ * Deletes a file from Google Drive permanently.
+ * @param {string} fileId The ID of the file to delete.
+ * @returns {Promise<void>}
+ */
+export async function deleteFileFromDrive(fileId: string): Promise<void> {
+    try {
+        await window.gapi.client.drive.files.delete({
+            fileId: fileId
+        });
+    } catch (error) {
+        console.error("Error deleting file from Drive:", error);
+        throw new Error("Không thể xóa tệp khỏi Google Drive.");
+    }
 }

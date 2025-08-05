@@ -1,20 +1,18 @@
 
 import React from 'react';
-import { CloseIcon, PlusIcon, UploadIcon } from './common/icons';
+import { CloseIcon, PlusIcon } from './common/icons';
 import type { ProcessedFile } from '../types';
 import { useSettings } from '../App';
 
 interface WorkspaceTabsProps {
     files: ProcessedFile[];
     activeFileId: number | null;
-    isLoggedIn: boolean;
     onSelectTab: (id: number) => void;
     onCloseTab: (id: number) => void;
     onAddNew: () => void;
-    onSaveToDrive: (fileId: number) => void;
 }
 
-export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ files, activeFileId, isLoggedIn, onSelectTab, onCloseTab, onAddNew, onSaveToDrive }) => {
+export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ files, activeFileId, onSelectTab, onCloseTab, onAddNew }) => {
     const { theme } = useSettings();
     const activeFile = files.find(f => f.id === activeFileId);
 
@@ -49,20 +47,10 @@ export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ files, activeFileI
                 })}
             </div>
              <div className="flex-shrink-0 ml-2 flex items-center gap-2">
-                 {isLoggedIn && activeFile && !activeFile.isSyncedWithDrive && (
-                    <button
-                        onClick={() => onSaveToDrive(activeFile.id)}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg}`}
-                        title="Lưu tệp này vào Google Drive"
-                    >
-                        <UploadIcon className="w-4 h-4" />
-                        Lưu vào Drive
-                    </button>
-                 )}
                 <button
                     onClick={onAddNew}
                     className={`flex items-center justify-center w-10 h-10 rounded-full ${theme.button.bg} ${theme.text} ${theme.button.hoverBg} transition-colors`}
-                    title="Thêm tệp mới"
+                    title="Trở về Không gian làm việc"
                 >
                     <PlusIcon className="w-5 h-5" />
                 </button>

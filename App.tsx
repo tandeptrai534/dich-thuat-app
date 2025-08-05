@@ -1,14 +1,9 @@
 
-
-
-
-
-
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
 import * as driveService from './services/googleDriveService';
-import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, SpecialTerm, DisplayMode } from './types';
+import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, DisplayMode, WorkspaceItem, SpecialTerm } from './types';
 import { InputArea } from './components/InputArea';
 import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon, BookmarkSquareIcon, DownloadIcon, TrashIcon, UploadIcon, GoogleIcon, ArrowRightOnRectangleIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
@@ -16,6 +11,7 @@ import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { OutputDisplay } from './components/OutputDisplay';
 import { GRAMMAR_COLOR_MAP } from './constants';
 import { GrammarRole } from './types';
+import { WorkspaceDashboard } from './components/WorkspaceDashboard';
 
 
 // Add global declarations for Google APIs
@@ -1596,10 +1592,8 @@ const DataManagementModal: React.FC<{
     onClear: (dataType: 'vocabulary' | 'analysisCache' | 'translationCache' | 'settings' | 'all') => void;
     googleApiStatus: GoogleApiStatus;
     isLoggedIn: boolean;
-    onSaveToDrive: () => void;
-    onLoadFromDrive: () => void;
     onLogin: () => void;
-}> = ({ isOpen, onClose, onExport, onImport, onClear, googleApiStatus, isLoggedIn, onSaveToDrive, onLoadFromDrive, onLogin }) => {
+}> = ({ isOpen, onClose, onExport, onImport, onClear, googleApiStatus, isLoggedIn, onLogin }) => {
     const { theme } = useSettings();
     const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -1637,20 +1631,13 @@ const DataManagementModal: React.FC<{
                 <div className="p-6 space-y-6 overflow-y-auto">
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><GoogleIcon className="w-5 h-5" />Google Drive</h3>
-                        {isLoggedIn ? (
-                            <>
-                                <p className={`text-sm ${theme.mutedText}`}>
-                                    Lưu hoặc tải dữ liệu của bạn từ Google Drive. Dữ liệu sẽ được lưu vào một tệp riêng tư mà chỉ ứng dụng này có thể truy cập.
-                                </p>
-                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button onClick={onSaveToDrive} disabled={googleApiStatus.status !== 'ready'} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Lưu vào Drive</button>
-                                    <button onClick={onLoadFromDrive} disabled={googleApiStatus.status !== 'ready'} className={`flex items-center justify-center gap-2 px-4 py-2 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed`}>Tải từ Drive</button>
-                                </div>
-                            </>
-                        ) : (
+                        <p className={`text-sm ${theme.mutedText}`}>
+                            Toàn bộ dữ liệu của bạn, bao gồm không gian làm việc, từ điển và cache, được tự động sao lưu vào Google Drive khi bạn đăng nhập.
+                        </p>
+                        {!isLoggedIn && (
                              <>
                                 <p className={`text-sm ${theme.mutedText}`}>
-                                    Đăng nhập bằng tài khoản Google của bạn để bật tính năng sao lưu và khôi phục trên Drive.
+                                    Đăng nhập để bắt đầu.
                                 </p>
                                 <button 
                                     onClick={onLogin} 
@@ -1673,7 +1660,7 @@ const DataManagementModal: React.FC<{
 
                     <section className="space-y-3">
                         <h3 className={`text-lg font-semibold ${theme.text} flex items-center gap-2`}><DownloadIcon className="w-5 h-5"/>Sao lưu cục bộ (Tệp)</h3>
-                        <p className={`text-sm ${theme.mutedText}`}>Lưu toàn bộ dữ liệu hiện tại của bạn vào một tệp JSON trên máy tính. Giữ tệp này an toàn để khôi phục sau này.</p>
+                        <p className={`text-sm ${theme.mutedText}`}>Tải xuống một bản sao lưu toàn bộ dữ liệu của bạn (không gian làm việc, từ điển, cache) vào một tệp JSON.</p>
                         <button onClick={onExport} className={`w-full flex items-center justify-center gap-2 px-4 py-2 ${theme.button.bg} ${theme.button.text} font-semibold rounded-lg shadow-sm ${theme.button.hoverBg} transition-colors`}>
                             Tải xuống tệp sao lưu
                         </button>
@@ -1711,6 +1698,7 @@ const DataManagementModal: React.FC<{
 // --- Main App Component ---
 
 const App = () => {
+    // Local State
     const [settings, setSettings] = useState<AppSettings>({
         apiKey: '',
         fontSize: 16,
@@ -1719,18 +1707,22 @@ const App = () => {
         theme: 'light',
         lineHeight: 1.6,
     });
+    const [analysisCache, setAnalysisCache] = useState<Map<string, AnalyzedText>>(new Map());
+    const [translationCache, setTranslationCache] = useState<Map<string, string>>(new Map());
+    const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
+    
+    // Workspace State
+    const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([]);
+    const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]); // In-memory active files
+    const [activeFileId, setActiveFileId] = useState<number | null>(null);
+
+    // UI & Error State
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<ApiError | null>(null);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isVocabularyOpen, setIsVocabularyOpen] = useState(false);
     const [isCacheLibraryOpen, setIsCacheLibraryOpen] = useState(false);
     const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
-    
-    const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
-    const [activeFileId, setActiveFileId] = useState<number | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState<ApiError | null>(null);
-    const [analysisCache, setAnalysisCache] = useState<Map<string, AnalyzedText>>(new Map());
-    const [translationCache, setTranslationCache] = useState<Map<string, string>>(new Map());
-    const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
     const [scrollTo, setScrollTo] = useState<{ chapterIndex: number; sentenceNumber: number } | null>(null);
 
     // Google Auth State
@@ -1740,7 +1732,10 @@ const App = () => {
     const [googleUser, setGoogleUser] = useState<any>(null);
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
     const userMenuRef = useRef<HTMLDivElement>(null);
+    const debouncedSaveRef = useRef<NodeJS.Timeout>();
 
+
+    // Task Queue State
     const [taskQueue, setTaskQueue] = useState<Array<{
         id: string,
         action: () => Promise<void>,
@@ -1750,7 +1745,8 @@ const App = () => {
     const [currentTaskDescription, setCurrentTaskDescription] = useState<string | null>(null);
     const stopFlags = useRef<Set<string>>(new Set());
     
-    useEffect(() => {
+    // --- Data Loading & Saving ---
+    const loadLocalData = useCallback(() => {
         try {
             const storedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
             if (storedSettings) setSettings(prev => ({...prev, ...JSON.parse(storedSettings)}));
@@ -1764,45 +1760,80 @@ const App = () => {
             const storedVocabulary = localStorage.getItem(VOCABULARY_STORAGE_KEY);
             if (storedVocabulary) setVocabulary(JSON.parse(storedVocabulary));
         } catch (e) { console.error("Failed to load data from localStorage", e); }
+    }, []);
+
+    useEffect(() => { loadLocalData(); }, [loadLocalData]);
+
+    useEffect(() => { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); }, [settings]);
+    useEffect(() => { localStorage.setItem(ANALYSIS_CACHE_STORAGE_KEY, JSON.stringify(Array.from(analysisCache.entries()))); }, [analysisCache]);
+    useEffect(() => { localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries()))); }, [translationCache]);
+    useEffect(() => { localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary)); }, [vocabulary]);
+
+    // Auto-save to Drive (debounced)
+    useEffect(() => {
+        if (!isLoggedIn || googleApiStatus.status !== 'ready') return;
         
-        // --- Google API Initialization ---
+        if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
+    
+        debouncedSaveRef.current = setTimeout(() => {
+            const dataToSave = packDataForExport();
+            driveService.saveDataToDrive(dataToSave).catch(err => {
+                console.error("Lỗi tự động lưu vào Drive:", err);
+                // Optionally show a non-intrusive error message
+            });
+        }, 3000); // 3-second debounce
+    
+        return () => {
+            if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
+        };
+    }, [isLoggedIn, googleApiStatus, settings, vocabulary, analysisCache, translationCache, workspaceItems]);
+
+    const unpackAndLoadData = (data: any, from: 'local' | 'drive') => {
+        if (!data || !data.version || !data.data) {
+            if (from === 'drive') alert("Không tìm thấy dữ liệu sao lưu hợp lệ trên Drive.");
+            return;
+        }
+        const { settings, vocabulary, analysisCache, translationCache, workspaceItems: loadedWorkspaceItems } = data.data;
+        if (settings) setSettings(settings);
+        if (vocabulary) setVocabulary(vocabulary);
+        if (analysisCache) setAnalysisCache(new Map(analysisCache));
+        if (translationCache) setTranslationCache(new Map(translationCache));
+        if (loadedWorkspaceItems) setWorkspaceItems(loadedWorkspaceItems);
+        if (from === 'drive') {
+            // No need to open all files, just show the dashboard
+            setActiveFileId(null);
+            setProcessedFiles([]);
+        }
+        alert('Khôi phục dữ liệu thành công!');
+    };
+
+    // --- Google API & Auth ---
+    useEffect(() => {
         const initGoogleApis = async () => {
             const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID;
             const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
 
-            if (!GOOGLE_CLIENT_ID) {
-                setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: VITE_GOOGLE_CLIENT_ID chưa được thiết lập.' });
-                return;
-            }
-            if (!GOOGLE_API_KEY) {
-                setGoogleApiStatus({ status: 'error', message: 'Lỗi cấu hình: VITE_API_KEY (dùng cho Google Drive) chưa được thiết lập.' });
+            if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) {
+                const missingKey = !GOOGLE_CLIENT_ID ? 'VITE_GOOGLE_CLIENT_ID' : 'VITE_API_KEY';
+                setGoogleApiStatus({ status: 'error', message: `Lỗi cấu hình: ${missingKey} chưa được thiết lập.` });
                 return;
             }
 
             try {
-                // Dynamically load both Google API scripts in parallel
                 await Promise.all([
                     loadScript('https://apis.google.com/js/api.js'),
                     loadScript('https://accounts.google.com/gsi/client'),
                 ]);
 
-                // Both scripts are loaded, now initialize them
-                // 1. Initialize GAPI client for Drive & Picker
                 await new Promise<void>((resolve, reject) => {
-                    window.gapi.load('client:picker', async () => {
-                        try {
-                            await window.gapi.client.init({
-                                apiKey: GOOGLE_API_KEY,
-                                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-                            });
-                            resolve();
-                        } catch (err) {
-                            reject(err);
-                        }
+                    window.gapi.load('client:picker', () => {
+                        window.gapi.client.init({
+                            apiKey: GOOGLE_API_KEY,
+                            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+                        }).then(resolve, reject);
                     });
                 });
                 
-                // 2. Initialize GIS client for Auth
                 const client = window.google.accounts.oauth2.initTokenClient({
                     client_id: GOOGLE_CLIENT_ID,
                     scope: DRIVE_SCOPES,
@@ -1810,9 +1841,11 @@ const App = () => {
                         if (tokenResponse.error) {
                             console.error("Google Auth Error:", tokenResponse);
                             setError({ message: `Lỗi đăng nhập Google: ${tokenResponse.error_description || tokenResponse.error}` });
+                            setIsLoggedIn(false);
                             return;
                         }
                         setIsLoggedIn(true);
+                        
                         try {
                             const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
                                 headers: { 'Authorization': `Bearer ${tokenResponse.access_token}` }
@@ -1820,33 +1853,31 @@ const App = () => {
                             if (!response.ok) throw new Error(`Failed to fetch profile: ${response.statusText}`);
                             const profile = await response.json();
                             setGoogleUser(profile);
+
+                            // Auto-load data from drive after successful login
+                            const loadedData = await driveService.loadDataFromDrive();
+                            if(loadedData) {
+                                unpackAndLoadData(loadedData, 'drive');
+                            }
                         } catch (err) {
-                            console.error("Failed to fetch user profile", err);
-                            setError({ message: `Không thể lấy thông tin người dùng: ${err instanceof Error ? err.message : String(err)}` });
+                            console.error("Lỗi khi lấy thông tin người dùng hoặc tải dữ liệu:", err);
+                            const message = err instanceof Error ? err.message : String(err);
+                            setError({ message: `Không thể lấy thông tin người dùng: ${message}` });
                         }
                     },
                 });
                 setTokenClient(client);
-
-                // Everything is ready
                 setGoogleApiStatus({ status: 'ready', message: 'Dịch vụ Google đã sẵn sàng.' });
-
             } catch (error) {
-                console.error("Google API initialization failed:", error);
+                console.error("Lỗi khởi tạo API Google:", error);
                 const message = error instanceof Error ? error.message : "Lỗi không xác định";
                 setGoogleApiStatus({ status: 'error', message: `Không thể khởi tạo dịch vụ Google: ${message}` });
             }
         };
-
         initGoogleApis();
-
     }, []);
-
-    useEffect(() => { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); }, [settings]);
-    useEffect(() => { localStorage.setItem(ANALYSIS_CACHE_STORAGE_KEY, JSON.stringify(Array.from(analysisCache.entries()))); }, [analysisCache]);
-    useEffect(() => { localStorage.setItem(TRANSLATION_CACHE_STORAGE_KEY, JSON.stringify(Array.from(translationCache.entries()))); }, [translationCache]);
-    useEffect(() => { localStorage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(vocabulary)); }, [vocabulary]);
-
+    
+    // --- Task Queue & UI Effects ---
     useEffect(() => {
         if (isApiBusy || taskQueue.length === 0) return;
 
@@ -1860,7 +1891,7 @@ const App = () => {
             try {
                 await task.action();
             } catch (err: any) {
-                console.error(`Error in task '${task.description}':`, err);
+                console.error(`Lỗi trong tác vụ '${task.description}':`, err);
                 setError({ message: err.message || `Lỗi khi thực hiện: ${task.description}` });
             } finally {
                 setIsApiBusy(false);
@@ -1917,9 +1948,9 @@ const App = () => {
     }, [settings.apiKey]);
 
 
-    const handleProcessText = useCallback((text: string, fileName: string, driveInfo?: { driveFileId: string, isSyncedWithDrive: boolean }) => {
+    const handleProcessAndOpenFile = useCallback((text: string, fileName: string, driveFileId?: string) => {
         if (!text.trim()) {
-            setError({ message: "Vui lòng nhập văn bản hoặc tải lên một tệp." });
+            setError({ message: "Nội dung tệp trống." });
             return;
         }
 
@@ -1929,22 +1960,29 @@ const App = () => {
             try {
                 const chapters = processTextIntoChapters(text);
                 if (chapters.length === 0) {
-                     setError({ message: "Không tìm thấy nội dung có thể phân tích trong văn bản." });
+                     setError({ message: "Không tìm thấy nội dung có thể phân tích." });
                      setIsLoading(false);
                      return;
                 }
                 
                 const newFile: ProcessedFile = {
-                    id: Date.now(),
+                    id: driveFileId ? Date.now() + Math.random() : Date.now(), // Ensure local files have unique IDs
                     fileName,
                     originalContent: text,
                     chapters,
                     visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
                     pageSize: PAGE_SIZE,
-                    ...driveInfo,
+                    driveFileId,
                 };
                 
-                setProcessedFiles(prev => [...prev, newFile]);
+                setProcessedFiles(prev => {
+                    // Prevent opening the same Drive file multiple times
+                    if (driveFileId && prev.some(f => f.driveFileId === driveFileId)) {
+                        setActiveFileId(prev.find(f => f.driveFileId === driveFileId)!.id);
+                        return prev;
+                    }
+                    return [...prev, newFile]
+                });
                 setActiveFileId(newFile.id);
 
             } catch (e: any) {
@@ -1954,6 +1992,37 @@ const App = () => {
             }
         }, 50);
     }, []);
+
+    const handleCreateNewWorkspaceItem = useCallback(async (text: string, fileName: string, type: 'file' | 'text') => {
+        if (!text.trim()) {
+            setError({ message: "Vui lòng nhập văn bản hoặc tải lên một tệp." });
+            return;
+        }
+
+        if (!isLoggedIn) {
+            handleProcessAndOpenFile(text, fileName);
+            return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+        try {
+            const driveFileId = await driveService.createFileInDrive(fileName, text);
+            const newWorkspaceItem: WorkspaceItem = {
+                driveFileId,
+                name: fileName,
+                type,
+                lastModified: new Date().toISOString(),
+            };
+            setWorkspaceItems(prev => [newWorkspaceItem, ...prev.filter(item => item.driveFileId !== driveFileId)]);
+            handleProcessAndOpenFile(text, fileName, driveFileId);
+        } catch(e: any) {
+            setError({ message: `Lỗi khi tạo tệp trên Drive: ${e.message}`});
+        } finally {
+            setIsLoading(false);
+        }
+    }, [isLoggedIn, handleProcessAndOpenFile]);
+
 
     const handleSaveVocabulary = useCallback((newTerms: SpecialTerm[], location: VocabularyLocation) => {
         setVocabulary(prevVocab => {
@@ -2255,14 +2324,13 @@ const App = () => {
     }, [activeFileId]);
 
     const handleCloseFile = useCallback((fileIdToClose: number) => {
-        const fileIndex = processedFiles.findIndex(f => f.id === fileIdToClose);
         const newFiles = processedFiles.filter(f => f.id !== fileIdToClose);
         
         if (activeFileId === fileIdToClose) {
-            if (newFiles.length === 0) {
-                setActiveFileId(null);
+            if (newFiles.length > 0) {
+                setActiveFileId(newFiles[0].id);
             } else {
-                setActiveFileId(newFiles[Math.max(0, fileIndex - 1)].id);
+                setActiveFileId(null); // Go back to dashboard view
             }
         }
         setProcessedFiles(newFiles);
@@ -2316,27 +2384,17 @@ const App = () => {
     }, [activeFileId, processedFiles, handleVisibleRangeUpdate, handleChapterUpdate]);
     
     const packDataForExport = () => ({
-        version: '1.1',
+        version: '1.2',
         createdAt: new Date().toISOString(),
         data: {
             settings,
             vocabulary,
             analysisCache: Array.from(analysisCache.entries()),
             translationCache: Array.from(translationCache.entries()),
+            workspaceItems,
         }
     });
     
-    const unpackAndLoadData = (data: any) => {
-        if (!data.version || !data.data) {
-            throw new Error("Tệp không hợp lệ hoặc sai định dạng.");
-        }
-        const { settings, vocabulary, analysisCache, translationCache } = data.data;
-        if (settings) setSettings(settings);
-        if (vocabulary) setVocabulary(vocabulary);
-        if (analysisCache) setAnalysisCache(new Map(analysisCache));
-        if (translationCache) setTranslationCache(new Map(translationCache));
-    };
-
     const handleExportData = useCallback(() => {
         try {
             const dataToExport = packDataForExport();
@@ -2347,7 +2405,7 @@ const App = () => {
             a.href = url;
             a.download = `trinh-phan-tich-tieng-trung-backup-${new Date().toISOString().split('T')[0]}.json`;
             document.body.appendChild(a);
-            a.click();
+a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
             alert('Đã tải xuống tệp sao lưu thành công.');
@@ -2355,7 +2413,7 @@ const App = () => {
             console.error('Lỗi khi xuất dữ liệu:', err);
             alert('Đã xảy ra lỗi khi tạo tệp sao lưu.');
         }
-    }, [settings, vocabulary, analysisCache, translationCache]);
+    }, [settings, vocabulary, analysisCache, translationCache, workspaceItems]);
 
     const handleImportData = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -2366,8 +2424,7 @@ const App = () => {
             try {
                 const text = e.target?.result as string;
                 const parsedData = JSON.parse(text);
-                unpackAndLoadData(parsedData);
-                alert('Khôi phục dữ liệu thành công!');
+                unpackAndLoadData(parsedData, 'local');
                 setIsDataManagementOpen(false);
             } catch (err: any) {
                 console.error('Lỗi khi nhập dữ liệu:', err);
@@ -2402,6 +2459,7 @@ const App = () => {
                 clearAnalysisCache();
                 clearTranslationCache();
                 resetSettings();
+                setWorkspaceItems([]);
                 break;
         }
         alert(`Đã xóa "${dataType}" thành công.`);
@@ -2418,95 +2476,76 @@ const App = () => {
         if (cred) {
             window.google.accounts.oauth2.revoke(cred.access_token, () => {});
             window.gapi.client.setToken(null);
-            setIsLoggedIn(false);
-            setGoogleUser(null);
         }
+        setIsLoggedIn(false);
+        setGoogleUser(null);
+        setWorkspaceItems([]);
+        setProcessedFiles([]);
+        setActiveFileId(null);
     };
     
-    const handleSaveToDrive = async () => {
-        try {
-            setIsLoading(true);
-            const dataToSave = packDataForExport();
-            await driveService.saveDataToDrive(dataToSave);
-            alert('Đã lưu dữ liệu vào Google Drive thành công!');
-        } catch (err: any) {
-            setError({ message: `Lỗi khi lưu vào Google Drive: ${err.message}`});
-        } finally {
-            setIsLoading(false);
-            setIsDataManagementOpen(false);
-        }
-    };
-    
-    const handleLoadFromDrive = async () => {
-        if (!window.confirm("Tải dữ liệu từ Google Drive sẽ ghi đè lên tất cả dữ liệu hiện tại của bạn. Bạn có muốn tiếp tục không?")) {
+    const handleOpenFileFromWorkspace = async (item: WorkspaceItem) => {
+        // If already open, just switch to it
+        const existingFile = processedFiles.find(f => f.driveFileId === item.driveFileId);
+        if (existingFile) {
+            setActiveFileId(existingFile.id);
             return;
         }
-        try {
-            setIsLoading(true);
-            const loadedData = await driveService.loadDataFromDrive();
-            if (loadedData) {
-                unpackAndLoadData(loadedData);
-                alert('Đã tải dữ liệu từ Google Drive thành công!');
-            } else {
-                 alert('Không tìm thấy tệp dữ liệu nào trong Google Drive. Hãy lưu dữ liệu trước.');
-            }
-        } catch (err: any) {
-            setError({ message: `Lỗi khi tải từ Google Drive: ${err.message}`});
-        } finally {
-            setIsLoading(false);
-            setIsDataManagementOpen(false);
-        }
-    };
 
-    const handleSaveFileToDrive = async (fileId: number) => {
-        const fileToSave = processedFiles.find(f => f.id === fileId);
-        if (!fileToSave) {
-            setError({ message: "Không tìm thấy tệp để lưu." });
-            return;
-        }
-    
-        if (!isLoggedIn) {
-            setError({ message: "Vui lòng đăng nhập để lưu tệp." });
-            return;
-        }
-    
         setIsLoading(true);
         setError(null);
-    
         try {
-            if (fileToSave.driveFileId) {
-                console.warn("Attempted to save an already synced file. This action should be disabled in the UI.");
-                return;
-            }
-    
-            const newDriveFileId = await driveService.createFileInDrive(fileToSave.fileName, fileToSave.originalContent);
-    
-            setProcessedFiles(prevFiles => prevFiles.map(file => {
-                if (file.id === fileId) {
-                    return { ...file, driveFileId: newDriveFileId, isSyncedWithDrive: true };
-                }
-                return file;
-            }));
-            
-            alert(`Đã lưu tệp "${fileToSave.fileName}" vào Google Drive thành công.`);
-    
+            const content = await driveService.fetchFileContent(item.driveFileId);
+            handleProcessAndOpenFile(content, item.name, item.driveFileId);
         } catch (err: any) {
-            setError({ message: `Lỗi khi lưu tệp vào Drive: ${err.message}` });
+            setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
         } finally {
             setIsLoading(false);
         }
     };
 
-    const handleOpenFileFromDrive = () => {
+    const handleDeleteWorkspaceItem = async (itemToDelete: WorkspaceItem, deleteFromDrive: boolean) => {
+        if (deleteFromDrive) {
+            if (!window.confirm(`BẠN CÓ CHẮC MUỐN XÓA VĨNH VIỄN TỆP "${itemToDelete.name}" KHỎI GOOGLE DRIVE KHÔNG? Hành động này không thể hoàn tác.`)) {
+                return;
+            }
+            setIsLoading(true);
+            setError(null);
+            try {
+                await driveService.deleteFileFromDrive(itemToDelete.driveFileId);
+            } catch (err: any) {
+                setError({ message: `Lỗi khi xóa tệp trên Drive: ${err.message}` });
+                setIsLoading(false);
+                return;
+            } finally {
+                setIsLoading(false);
+            }
+        } else {
+            if (!window.confirm(`Bạn có chắc muốn xóa "${itemToDelete.name}" khỏi không gian làm việc không? Tệp gốc trên Drive sẽ không bị ảnh hưởng.`)) {
+                return;
+            }
+        }
+    
+        // Close tab if it's open
+        const fileToRemove = processedFiles.find(f => f.driveFileId === itemToDelete.driveFileId);
+        if (fileToRemove) {
+            handleCloseFile(fileToRemove.id);
+        }
+    
+        // Remove from workspace list
+        setWorkspaceItems(prev => prev.filter(item => item.driveFileId !== itemToDelete.driveFileId));
+    };
+
+    const handleOpenFileFromDrivePicker = () => {
         const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
         const token = window.gapi.client.getToken();
 
         if (!isLoggedIn || !token) {
-            setError({ message: "Vui lòng đăng nhập bằng tài khoản Google trước khi sử dụng tính năng này." });
+            setError({ message: "Vui lòng đăng nhập bằng tài khoản Google trước." });
             return;
         }
         if (!GOOGLE_API_KEY) {
-            setError({ message: "Lỗi cấu hình: VITE_API_KEY chưa được thiết lập. Tính năng này cần API Key của Google Cloud để hoạt động. Vui lòng xem hướng dẫn cài đặt." });
+            setError({ message: "Lỗi cấu hình: VITE_API_KEY chưa được thiết lập." });
             return;
         }
     
@@ -2524,7 +2563,9 @@ const App = () => {
                     setError(null);
                     try {
                         const content = await driveService.fetchFileContent(file.id, file.mimeType);
-                        handleProcessText(content, file.name, { driveFileId: file.id, isSyncedWithDrive: true });
+                        // Open it, but don't add to workspace yet. It gets added if user works on it and has state.
+                        // Actually, let's treat it like a new file.
+                        await handleCreateNewWorkspaceItem(content, file.name, 'file');
                     } catch (err: any) {
                         setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
                     } finally {
@@ -2536,10 +2577,7 @@ const App = () => {
         picker.setVisible(true);
     };
 
-
-    const handleAddNewFile = useCallback(() => { setActiveFileId(null); setError(null); }, []);
-    const handleDeleteAnalysisCacheItem = useCallback((key: string) => { setAnalysisCache(prev => { const n = new Map(prev); n.delete(key); return n; }); }, []);
-    const handleDeleteTranslationCacheItem = useCallback((key: string) => { setTranslationCache(prev => { const n = new Map(prev); n.delete(key); return n; }); }, []);
+    const handleAddNewFile = useCallback(() => { setActiveFileId(null); }, []);
 
     const activeFile = processedFiles.find(f => f.id === activeFileId);
     const themeClasses = getThemeClasses(settings.theme);
@@ -2565,8 +2603,8 @@ const App = () => {
                     onClose={() => setIsCacheLibraryOpen(false)} 
                     analysisCache={analysisCache}
                     translationCache={translationCache}
-                    onDeleteAnalysis={handleDeleteAnalysisCacheItem}
-                    onDeleteTranslation={handleDeleteTranslationCacheItem}
+                    onDeleteAnalysis={(key) => setAnalysisCache(prev => { const n = new Map(prev); n.delete(key); return n; })}
+                    onDeleteTranslation={(key) => setTranslationCache(prev => { const n = new Map(prev); n.delete(key); return n; })}
                 />
                 <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
                 <DataManagementModal
@@ -2577,8 +2615,6 @@ const App = () => {
                     onClear={handleClearData}
                     googleApiStatus={googleApiStatus}
                     isLoggedIn={isLoggedIn}
-                    onSaveToDrive={handleSaveToDrive}
-                    onLoadFromDrive={handleLoadFromDrive}
                     onLogin={handleAuthClick}
                 />
 
@@ -2647,16 +2683,15 @@ const App = () => {
 
                 <main className="container mx-auto p-4 md:p-8">
                     <div className="max-w-5xl mx-auto">
-                         <WorkspaceTabs 
+                        {processedFiles.length > 0 && <WorkspaceTabs 
                             files={processedFiles}
                             activeFileId={activeFileId}
-                            isLoggedIn={isLoggedIn}
                             onSelectTab={setActiveFileId}
                             onCloseTab={handleCloseFile}
                             onAddNew={handleAddNewFile}
-                            onSaveToDrive={handleSaveFileToDrive}
-                         />
-                         {error && (
+                        />}
+                        
+                        {error && (
                             <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow" role="alert">
                                 <div className="flex justify-between items-center">
                                    <div>
@@ -2672,13 +2707,23 @@ const App = () => {
 
                         {!activeFile ? (
                             <div className="mt-4">
-                                <InputArea
-                                    onProcess={handleProcessText}
-                                    isLoading={isLoading}
-                                    fileCount={processedFiles.length}
-                                    isLoggedIn={isLoggedIn}
-                                    onOpenDrive={handleOpenFileFromDrive}
-                                />
+                                {isLoggedIn ? (
+                                    <WorkspaceDashboard
+                                        items={workspaceItems}
+                                        onOpenItem={handleOpenFileFromWorkspace}
+                                        onDeleteItem={handleDeleteWorkspaceItem}
+                                        onNewText={(text, name) => handleCreateNewWorkspaceItem(text, name, 'text')}
+                                        onNewFile={(text, name) => handleCreateNewWorkspaceItem(text, name, 'file')}
+                                        onOpenDrivePicker={handleOpenFileFromDrivePicker}
+                                        isLoading={isLoading}
+                                    />
+                                ) : (
+                                     <InputArea
+                                        onProcess={(text, name) => handleCreateNewWorkspaceItem(text, name, 'text')}
+                                        isLoading={isLoading}
+                                        isLoggedIn={isLoggedIn}
+                                    />
+                                )}
                             </div>
                         ) : (
                            <div className="mt-4">
