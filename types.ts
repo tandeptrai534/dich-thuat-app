@@ -66,12 +66,20 @@ export interface ChapterData {
 export interface ProcessedFile {
     id: number;
     fileName: string;
+    originalContent: string;
     chapters: ChapterData[];
     visibleRange: {
         start: number;
         end: number;
     };
     pageSize: number;
+    driveFileId?: string; // ID of the file on Google Drive
+    isSyncedWithDrive?: boolean; // True if the file is from Drive or has been saved to Drive
+}
+
+export interface DriveSyncedFile {
+    id: string; // Google Drive File ID
+    name: string;
 }
 
 // --- App Settings ---

@@ -1,5 +1,7 @@
 
 
+
+
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
@@ -1273,6 +1275,7 @@ const VocabularyModal: React.FC<{
     const [searchTerm, setSearchTerm] = useState('');
     const [editingTermKey, setEditingTermKey] = useState<string | null>(null);
     const [editFormData, setEditFormData] = useState<Partial<VocabularyItem>>({});
+    const [activeTab, setActiveTab] = useState<'unchecked' | 'checked'>('unchecked');
 
     if (!isOpen) return null;
 
@@ -1320,14 +1323,29 @@ const VocabularyModal: React.FC<{
         setEditFormData(prev => ({ ...prev, [name]: value }));
     };
 
-    const filteredVocabulary = vocabulary.filter(item => 
-        item.term.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.sinoVietnamese.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.explanation?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.category?.toLowerCase().includes(searchTerm.toLowerCase())
-    ).sort((a, b) => a.term.localeCompare(b.term, 'zh-Hans-CN'));
+    const sortByLocation = (a: VocabularyItem, b: VocabularyItem) => {
+        if (a.firstLocation.chapterIndex !== b.firstLocation.chapterIndex) {
+            return a.firstLocation.chapterIndex - b.firstLocation.chapterIndex;
+        }
+        return a.firstLocation.sentenceNumber - b.firstLocation.sentenceNumber;
+    };
+
+    const uncheckedItems = vocabulary.filter(item => !item.isForceSino).sort(sortByLocation);
+    const checkedItems = vocabulary.filter(item => item.isForceSino).sort(sortByLocation);
+
+    const getFilteredItems = (items: VocabularyItem[]) => {
+        if (!searchTerm) return items;
+        return items.filter(item => 
+            item.term.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.sinoVietnamese.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.explanation?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.category?.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+    };
+
+    const displayedItems = activeTab === 'unchecked' ? getFilteredItems(uncheckedItems) : getFilteredItems(checkedItems);
     
-    const EditForm = ({item}: {item: VocabularyItem}) => (
+    const EditForm: React.FC<{item: VocabularyItem}> = ({item}) => (
         <div className={`mt-3 pt-3 border-t ${theme.border} space-y-3`}>
             <div className='space-y-1'>
                 <label className={`text-xs font-semibold ${theme.mutedText}`}>Cụm từ (Hán)</label>
@@ -1352,6 +1370,20 @@ const VocabularyModal: React.FC<{
         </div>
     );
     
+    const TabButton: React.FC<{ label: string, isActive: boolean, onClick: () => void }> = ({ label, isActive, onClick }) => {
+        const activeClasses = `border-blue-500 text-blue-600 dark:text-blue-400`;
+        const inactiveClasses = `border-transparent ${theme.mutedText} hover:text-slate-700 dark:hover:text-slate-300 hover:border-slate-300 dark:hover:border-slate-700`;
+        
+        return (
+            <button
+                onClick={onClick}
+                className={`whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors ${isActive ? activeClasses : inactiveClasses}`}
+            >
+                {label}
+            </button>
+        );
+    };
+
     return (
         <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={onClose}>
             <div
@@ -1378,12 +1410,29 @@ const VocabularyModal: React.FC<{
                         />
                     </div>
                 </header>
+                
+                <div className={`px-4 border-b ${theme.border} flex-shrink-0`}>
+                    <nav className="-mb-px flex space-x-6">
+                        <TabButton 
+                            label={`Chưa check (${uncheckedItems.length})`} 
+                            isActive={activeTab === 'unchecked'} 
+                            onClick={() => setActiveTab('unchecked')}
+                        />
+                        <TabButton 
+                            label={`Đã check (${checkedItems.length})`} 
+                            isActive={activeTab === 'checked'} 
+                            onClick={() => setActiveTab('checked')}
+                        />
+                    </nav>
+                </div>
 
                 <div className="p-4 overflow-y-auto space-y-3 flex-grow">
-                    {filteredVocabulary.length === 0 ? (
-                        <p className={theme.mutedText}>Từ điển của bạn còn trống. Phân tích câu để tự động thêm các cụm từ, tên riêng, thành ngữ vào đây.</p>
+                    {displayedItems.length === 0 ? (
+                        <p className={theme.mutedText}>
+                            {searchTerm ? `Không tìm thấy kết quả cho "${searchTerm}".` : `Không có mục nào trong thẻ này.`}
+                        </p>
                     ) : (
-                        filteredVocabulary.map((item, index) => (
+                        displayedItems.map((item, index) => (
                             <details key={index} className={`p-3 rounded-lg border ${theme.border} ${theme.mainBg}`}>
                                 <summary className="flex justify-between items-center cursor-pointer list-none">
                                     <div className="flex-grow min-w-0 flex items-start gap-4">
@@ -1442,7 +1491,7 @@ const VocabularyModal: React.FC<{
                     )}
                 </div>
                  <footer className={`p-3 border-t ${theme.border} text-center flex-shrink-0`}>
-                     <p className={`text-xs ${theme.mutedText}`}>Đã lưu {vocabulary.length} cụm từ. ({vocabulary.filter(v => v.isForceSino).length} mục được ưu tiên dịch Hán-Việt)</p>
+                     <p className={`text-xs ${theme.mutedText}`}>Đã lưu {vocabulary.length} cụm từ. ({checkedItems.length} mục được ưu tiên dịch Hán-Việt)</p>
                 </footer>
             </div>
         </div>
@@ -1866,7 +1915,7 @@ const App = () => {
     }, [settings.apiKey]);
 
 
-    const handleProcessText = useCallback((text: string, fileName: string) => {
+    const handleProcessText = useCallback((text: string, fileName: string, driveInfo?: { driveFileId: string, isSyncedWithDrive: boolean }) => {
         if (!text.trim()) {
             setError({ message: "Vui lòng nhập văn bản hoặc tải lên một tệp." });
             return;
@@ -1886,9 +1935,11 @@ const App = () => {
                 const newFile: ProcessedFile = {
                     id: Date.now(),
                     fileName,
+                    originalContent: text,
                     chapters,
                     visibleRange: { start: 0, end: Math.min(PAGE_SIZE, chapters.length) },
                     pageSize: PAGE_SIZE,
+                    ...driveInfo,
                 };
                 
                 setProcessedFiles(prev => [...prev, newFile]);
@@ -2405,6 +2456,45 @@ const App = () => {
         }
     };
 
+    const handleSaveFileToDrive = async (fileId: number) => {
+        const fileToSave = processedFiles.find(f => f.id === fileId);
+        if (!fileToSave) {
+            setError({ message: "Không tìm thấy tệp để lưu." });
+            return;
+        }
+    
+        if (!isLoggedIn) {
+            setError({ message: "Vui lòng đăng nhập để lưu tệp." });
+            return;
+        }
+    
+        setIsLoading(true);
+        setError(null);
+    
+        try {
+            if (fileToSave.driveFileId) {
+                console.warn("Attempted to save an already synced file. This action should be disabled in the UI.");
+                return;
+            }
+    
+            const newDriveFileId = await driveService.createFileInDrive(fileToSave.fileName, fileToSave.originalContent);
+    
+            setProcessedFiles(prevFiles => prevFiles.map(file => {
+                if (file.id === fileId) {
+                    return { ...file, driveFileId: newDriveFileId, isSyncedWithDrive: true };
+                }
+                return file;
+            }));
+            
+            alert(`Đã lưu tệp "${fileToSave.fileName}" vào Google Drive thành công.`);
+    
+        } catch (err: any) {
+            setError({ message: `Lỗi khi lưu tệp vào Drive: ${err.message}` });
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     const handleOpenFileFromDrive = () => {
         const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
         const token = window.gapi.client.getToken();
@@ -2432,7 +2522,7 @@ const App = () => {
                     setError(null);
                     try {
                         const content = await driveService.fetchFileContent(file.id, file.mimeType);
-                        handleProcessText(content, file.name);
+                        handleProcessText(content, file.name, { driveFileId: file.id, isSyncedWithDrive: true });
                     } catch (err: any) {
                         setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
                     } finally {
@@ -2558,9 +2648,11 @@ const App = () => {
                          <WorkspaceTabs 
                             files={processedFiles}
                             activeFileId={activeFileId}
+                            isLoggedIn={isLoggedIn}
                             onSelectTab={setActiveFileId}
                             onCloseTab={handleCloseFile}
                             onAddNew={handleAddNewFile}
+                            onSaveToDrive={handleSaveFileToDrive}
                          />
                          {error && (
                             <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow" role="alert">

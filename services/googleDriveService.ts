@@ -39,10 +39,10 @@ async function getOrCreateAppFolderId(): Promise<string> {
  * @param {string} folderId The ID of the app's folder.
  * @returns {Promise<string|null>} The ID of the file, or null if not found.
  */
-async function findFileId(folderId: string): Promise<string | null> {
+async function findFileId(folderId: string, fileName: string = FILE_NAME): Promise<string | null> {
     try {
         const response = await window.gapi.client.drive.files.list({
-            q: `'${folderId}' in parents and name='${FILE_NAME}' and trashed=false`,
+            q: `'${folderId}' in parents and name='${fileName}' and trashed=false`,
             fields: 'files(id)',
             pageSize: 1
         });
@@ -167,4 +167,40 @@ export async function fetchFileContent(fileId: string, mimeType: string): Promis
         }
         throw new Error("Lỗi không xác định khi lấy nội dung tệp.");
     }
+}
+
+/**
+ * Creates a new text file in the app's Google Drive folder.
+ * @param fileName The name for the new file.
+ * @param content The text content of the file.
+ * @returns {Promise<string>} The ID of the newly created file.
+ */
+export async function createFileInDrive(fileName: string, content: string): Promise<string> {
+    const folderId = await getOrCreateAppFolderId();
+
+    const fileMetadata = {
+        name: fileName,
+        mimeType: 'text/plain',
+        parents: [folderId],
+    };
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const form = new FormData();
+    const metadataBlob = new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' });
+    form.append('metadata', metadataBlob);
+    form.append('file', blob);
+
+    const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
+        method: 'POST',
+        headers: new Headers({ 'Authorization': `Bearer ${window.gapi.client.getToken().access_token}` }),
+        body: form
+    });
+    
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`Không thể tạo tệp trên Drive: ${errorData.error?.message || response.statusText}`);
+    }
+
+    const result = await response.json();
+    return result.id;
 }
