@@ -130,3 +130,41 @@ export async function loadDataFromDrive(): Promise<any | null> {
         throw new Error("Không thể tải dữ liệu từ Google Drive.");
     }
 }
+
+/**
+ * Fetches the text content of a file from Google Drive.
+ * @param fileId The ID of the file.
+ * @param mimeType The MIME type of the file.
+ * @returns A promise that resolves with the text content of the file.
+ */
+export async function fetchFileContent(fileId: string, mimeType: string): Promise<string> {
+    try {
+        if (mimeType === 'application/vnd.google-apps.document') {
+            const accessToken = window.gapi.client.getToken()?.access_token;
+            if (!accessToken) throw new Error("Token truy cập không hợp lệ.");
+            
+            const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`, {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(`Lỗi xuất Google Doc: ${errorData.error?.message || response.statusText}`);
+            }
+            return await response.text();
+        } else {
+            // Assume plain text for others
+            const response = await window.gapi.client.drive.files.get({
+                fileId: fileId,
+                alt: 'media'
+            });
+            return response.body;
+        }
+    } catch (error) {
+        console.error("Lỗi khi lấy nội dung tệp từ Drive:", error);
+        if (error instanceof Error) {
+            throw new Error(`Không thể lấy nội dung tệp: ${error.message}`);
+        }
+        throw new Error("Lỗi không xác định khi lấy nội dung tệp.");
+    }
+}

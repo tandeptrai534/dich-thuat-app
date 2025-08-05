@@ -1,16 +1,18 @@
 
 import React, { useRef, useState } from 'react';
 import { Spinner } from './common/Spinner';
-import { UploadIcon } from './common/icons';
+import { GoogleIcon, UploadIcon } from './common/icons';
 import { useSettings } from '../App';
 
 interface InputAreaProps {
     onProcess: (text: string, fileName: string) => void;
     isLoading: boolean;
     fileCount: number;
+    isLoggedIn: boolean;
+    onOpenDrive: () => void;
 }
 
-export const InputArea: React.FC<InputAreaProps> = ({ onProcess, isLoading, fileCount }) => {
+export const InputArea: React.FC<InputAreaProps> = ({ onProcess, isLoading, fileCount, isLoggedIn, onOpenDrive }) => {
     const [inputText, setInputText] = useState<string>('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const { theme } = useSettings();
@@ -84,6 +86,15 @@ export const InputArea: React.FC<InputAreaProps> = ({ onProcess, isLoading, file
                     >
                         <UploadIcon className="w-5 h-5 mr-2" />
                         Hoặc tải lên tệp .txt
+                    </button>
+                    <button
+                        onClick={onOpenDrive}
+                        disabled={isLoading || !isLoggedIn}
+                        className={`w-full sm:w-auto flex items-center justify-center px-4 py-3 border ${theme.border} ${theme.cardBg} ${theme.text} font-semibold rounded-lg shadow-sm ${theme.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+                        title={!isLoggedIn ? "Đăng nhập với Google để sử dụng tính năng này" : "Mở tệp từ Google Drive"}
+                    >
+                        <GoogleIcon className="w-5 h-5 mr-2" />
+                        Tải từ Google Drive
                     </button>
                 </div>
             </div>

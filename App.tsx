@@ -1,12 +1,11 @@
 
-
 import React, { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import ReactDOM from 'react-dom';
 import { analyzeSentence, translateSentencesInBatch } from './services/geminiService';
 import * as driveService from './services/googleDriveService';
 import type { ApiError, ChapterData, ProcessedFile, AppSettings, Theme, FontSize, FontFamily, SentenceData, TokenData, VocabularyItem, AnalyzedText, VocabularyLocation, SpecialTerm, DisplayMode } from './types';
 import { InputArea } from './components/InputArea';
-import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon, BookmarkSquareIcon, DownloadIcon, TrashIcon, UploadIcon, GoogleIcon } from './components/common/icons';
+import { GithubIcon, ChevronDownIcon, CopyIcon, CloseIcon, SettingsIcon, CheckIcon, PlayIcon, BookOpenIcon, StarIcon, ArchiveBoxIcon, StopIcon, DocumentTextIcon, PencilIcon, ArrowPathIcon, MapPinIcon, BookmarkSquareIcon, DownloadIcon, TrashIcon, UploadIcon, GoogleIcon, ArrowRightOnRectangleIcon } from './components/common/icons';
 import { Spinner } from './components/common/Spinner';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { OutputDisplay } from './components/OutputDisplay';
@@ -34,7 +33,8 @@ const TRANSLATION_CACHE_STORAGE_KEY = 'chinese_analyzer_translation_cache';
 const VOCABULARY_STORAGE_KEY = 'chinese_analyzer_vocabulary_v5'; // version bump for new structure
 const CHINESE_PUNCTUATION_REGEX = /^[，。！？；：、“”《》【】（）…—–_.,?!;:"'()\[\]{}]+$/;
 
-const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+
 
 // --- Types ---
 type GoogleApiStatus = {
@@ -1560,6 +1560,8 @@ const App = () => {
     const [tokenClient, setTokenClient] = useState<any>(null);
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [googleUser, setGoogleUser] = useState<any>(null);
+    const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+    const userMenuRef = useRef<HTMLDivElement>(null);
 
     const [taskQueue, setTaskQueue] = useState<Array<{
         id: string,
@@ -1607,9 +1609,9 @@ const App = () => {
                 ]);
 
                 // Both scripts are loaded, now initialize them
-                // 1. Initialize GAPI client for Drive
+                // 1. Initialize GAPI client for Drive & Picker
                 await new Promise<void>((resolve, reject) => {
-                    window.gapi.load('client', async () => {
+                    window.gapi.load('client:picker', async () => {
                         try {
                             await window.gapi.client.init({
                                 apiKey: GOOGLE_API_KEY,
@@ -1714,6 +1716,18 @@ const App = () => {
             setScrollTo(null);
         }
     }, [scrollTo, activeFileId, processedFiles]);
+    
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+                setIsUserMenuOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [userMenuRef]);
     
     const checkApiKey = useCallback(() => {
         if (!settings.apiKey) {
@@ -2264,6 +2278,40 @@ const App = () => {
         }
     };
 
+    const handleOpenFileFromDrive = () => {
+        const GOOGLE_API_KEY = import.meta.env?.VITE_API_KEY;
+        const token = window.gapi.client.getToken();
+        if (!isLoggedIn || !token || !GOOGLE_API_KEY) {
+            alert("Lỗi: Cần đăng nhập và cấu hình Google API để sử dụng tính năng này.");
+            return;
+        }
+    
+        const view = new window.google.picker.DocsView()
+            .setMimeTypes("application/vnd.google-apps.document,text/plain");
+    
+        const picker = new window.google.picker.PickerBuilder()
+            .addView(view)
+            .setOAuthToken(token.access_token)
+            .setDeveloperKey(GOOGLE_API_KEY)
+            .setCallback(async (data: any) => {
+                if (data.action === window.google.picker.Action.PICKED) {
+                    const file = data.docs[0];
+                    setIsLoading(true);
+                    setError(null);
+                    try {
+                        const content = await driveService.fetchFileContent(file.id, file.mimeType);
+                        handleProcessText(content, file.name);
+                    } catch (err: any) {
+                        setError({ message: `Lỗi tải tệp từ Drive: ${err.message}` });
+                    } finally {
+                        setIsLoading(false);
+                    }
+                }
+            })
+            .build();
+        picker.setVisible(true);
+    };
+
 
     const handleAddNewFile = useCallback(() => { setActiveFileId(null); setError(null); }, []);
     const handleDeleteAnalysisCacheItem = useCallback((key: string) => { setAnalysisCache(prev => { const n = new Map(prev); n.delete(key); return n; }); }, []);
@@ -2325,12 +2373,41 @@ const App = () => {
                             <button onClick={() => setIsDataManagementOpen(true)} className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors`} title="Quản lý Dữ liệu (Sao lưu/Khôi phục)">
                                 <BookmarkSquareIcon className="w-6 h-6" />
                             </button>
-                             { isLoggedIn && googleUser && (
-                                <div className="flex items-center gap-2">
-                                    <img src={googleUser.picture} alt="avatar" className="w-7 h-7 rounded-full" />
-                                    <button onClick={handleSignoutClick} className={`text-xs ${themeClasses.mutedText} hover:${themeClasses.text}`}>Đăng xuất</button>
+                             
+                            {isLoggedIn && googleUser ? (
+                                <div className="relative" ref={userMenuRef}>
+                                    <button
+                                        onClick={() => setIsUserMenuOpen(o => !o)}
+                                        className="w-8 h-8 rounded-full overflow-hidden transition-all duration-200 ring-2 ring-transparent hover:ring-blue-500 focus:ring-blue-500"
+                                        title="Tài khoản người dùng"
+                                    >
+                                        <img src={googleUser.picture} alt="User avatar" className="w-full h-full object-cover" />
+                                    </button>
+
+                                    {isUserMenuOpen && (
+                                        <div className={`absolute top-full right-0 mt-2 w-64 ${themeClasses.cardBg} border ${themeClasses.border} rounded-lg shadow-xl z-10`}>
+                                            <div className="p-3">
+                                                <p className="font-semibold truncate" title={googleUser.name}>{googleUser.name}</p>
+                                                <p className={`text-sm ${themeClasses.mutedText} truncate`} title={googleUser.email}>{googleUser.email}</p>
+                                            </div>
+                                            <div className={`my-0 h-px ${themeClasses.mainBg}`}></div>
+                                            <div className="p-1">
+                                                <button
+                                                    onClick={() => {
+                                                        handleSignoutClick();
+                                                        setIsUserMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-3 p-2 rounded-md ${themeClasses.hoverBg} text-red-500 dark:text-red-400 font-semibold transition-colors`}
+                                                >
+                                                    <ArrowRightOnRectangleIcon className="w-5 h-5" />
+                                                    <span>Đăng xuất</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
-                            )}
+                            ) : null}
+
                              <a href="https://github.com/google/genai-js" target="_blank" rel="noopener noreferrer" className={`${themeClasses.mutedText} hover:${themeClasses.text} transition-colors hidden md:block`}>
                                 <GithubIcon className="w-6 h-6" />
                             </a>
@@ -2373,6 +2450,8 @@ const App = () => {
                                     onProcess={handleProcessText}
                                     isLoading={isLoading}
                                     fileCount={processedFiles.length}
+                                    isLoggedIn={isLoggedIn}
+                                    onOpenDrive={handleOpenFileFromDrive}
                                 />
                             </div>
                         ) : (
