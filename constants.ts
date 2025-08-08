@@ -1,5 +1,6 @@
 
 
+
 import { GrammarRole, Theme } from './types';
 
 export const GRAMMAR_ROLE_TRANSLATIONS: Record<GrammarRole, { vi: string, en: string }> = {
@@ -23,43 +24,43 @@ export const getGrammarColorMap = (theme: Theme): Record<GrammarRole, { text: st
     const isSepia = theme === 'sepia';
 
     const lightColors = {
-        [GrammarRole.SUBJECT]: { text: 'text-blue-900', bg: 'bg-blue-200', border: 'border-blue-300' },
-        [GrammarRole.PREDICATE]: { text: 'text-red-900', bg: 'bg-red-200', border: 'border-red-300' },
-        [GrammarRole.OBJECT]: { text: 'text-green-900', bg: 'bg-green-200', border: 'border-green-300' },
-        [GrammarRole.ADVERBIAL]: { text: 'text-purple-900', bg: 'bg-purple-200', border: 'border-purple-300' },
-        [GrammarRole.COMPLEMENT]: { text: 'text-amber-900', bg: 'bg-amber-200', border: 'border-amber-400' },
-        [GrammarRole.ATTRIBUTE]: { text: 'text-indigo-900', bg: 'bg-indigo-200', border: 'border-indigo-300' },
-        [GrammarRole.PARTICLE]: { text: 'text-pink-900', bg: 'bg-pink-200', border: 'border-pink-300' },
-        [GrammarRole.INTERJECTION]: { text: 'text-gray-800', bg: 'bg-gray-300', border: 'border-gray-400' },
-        [GrammarRole.CONJUNCTION]: { text: 'text-teal-900', bg: 'bg-teal-200', border: 'border-teal-300' },
-        [GrammarRole.NUMERAL]: { text: 'text-orange-900', bg: 'bg-orange-200', border: 'border-orange-300' },
-        [GrammarRole.MEASURE_WORD]: { text: 'text-cyan-900', bg: 'bg-cyan-200', border: 'border-cyan-300' },
-        [GrammarRole.UNKNOWN]: { text: 'text-slate-800', bg: 'bg-slate-200', border: 'border-slate-400' },
+        [GrammarRole.SUBJECT]: { text: 'text-blue-900', bg: 'bg-blue-500', border: 'border-blue-600' },
+        [GrammarRole.PREDICATE]: { text: 'text-red-900', bg: 'bg-red-500', border: 'border-red-600' },
+        [GrammarRole.OBJECT]: { text: 'text-green-900', bg: 'bg-green-500', border: 'border-green-600' },
+        [GrammarRole.ADVERBIAL]: { text: 'text-purple-900', bg: 'bg-purple-500', border: 'border-purple-600' },
+        [GrammarRole.COMPLEMENT]: { text: 'text-amber-900', bg: 'bg-amber-500', border: 'border-amber-600' },
+        [GrammarRole.ATTRIBUTE]: { text: 'text-indigo-900', bg: 'bg-indigo-500', border: 'border-indigo-600' },
+        [GrammarRole.PARTICLE]: { text: 'text-pink-900', bg: 'bg-pink-500', border: 'border-pink-600' },
+        [GrammarRole.INTERJECTION]: { text: 'text-gray-800', bg: 'bg-gray-500', border: 'border-gray-600' },
+        [GrammarRole.CONJUNCTION]: { text: 'text-teal-900', bg: 'bg-teal-500', border: 'border-teal-600' },
+        [GrammarRole.NUMERAL]: { text: 'text-orange-900', bg: 'bg-orange-500', border: 'border-orange-600' },
+        [GrammarRole.MEASURE_WORD]: { text: 'text-cyan-900', bg: 'bg-cyan-500', border: 'border-cyan-600' },
+        [GrammarRole.UNKNOWN]: { text: 'text-slate-800', bg: 'bg-slate-500', border: 'border-slate-600' },
     };
 
     if (isDark) {
         return {
-            [GrammarRole.SUBJECT]: { text: 'text-blue-400', bg: 'bg-blue-800/40', border: 'border-blue-700/60' },
-            [GrammarRole.PREDICATE]: { text: 'text-red-400', bg: 'bg-red-800/40', border: 'border-red-700/60' },
-            [GrammarRole.OBJECT]: { text: 'text-green-400', bg: 'bg-green-800/40', border: 'border-green-700/60' },
-            [GrammarRole.ADVERBIAL]: { text: 'text-purple-400', bg: 'bg-purple-800/40', border: 'border-purple-700/60' },
-            [GrammarRole.COMPLEMENT]: { text: 'text-amber-400', bg: 'bg-amber-800/40', border: 'border-amber-700/60' },
-            [GrammarRole.ATTRIBUTE]: { text: 'text-indigo-400', bg: 'bg-indigo-800/40', border: 'border-indigo-700/60' },
-            [GrammarRole.PARTICLE]: { text: 'text-pink-400', bg: 'bg-pink-800/40', border: 'border-pink-700/60' },
-            [GrammarRole.INTERJECTION]: { text: 'text-gray-400', bg: 'bg-gray-700/60', border: 'border-gray-600/80' },
-            [GrammarRole.CONJUNCTION]: { text: 'text-teal-300', bg: 'bg-teal-800/40', border: 'border-teal-700/60' },
-            [GrammarRole.NUMERAL]: { text: 'text-orange-400', bg: 'bg-orange-800/40', border: 'border-orange-700/60' },
-            [GrammarRole.MEASURE_WORD]: { text: 'text-cyan-400', bg: 'bg-cyan-800/40', border: 'border-cyan-700/60' },
-            [GrammarRole.UNKNOWN]: { text: 'text-slate-400', bg: 'bg-slate-700/60', border: 'border-slate-600/80' },
+            [GrammarRole.SUBJECT]: { text: 'text-blue-400', bg: 'bg-blue-400', border: 'border-blue-500' },
+            [GrammarRole.PREDICATE]: { text: 'text-red-400', bg: 'bg-red-400', border: 'border-red-500' },
+            [GrammarRole.OBJECT]: { text: 'text-green-400', bg: 'bg-green-400', border: 'border-green-500' },
+            [GrammarRole.ADVERBIAL]: { text: 'text-purple-400', bg: 'bg-purple-400', border: 'border-purple-500' },
+            [GrammarRole.COMPLEMENT]: { text: 'text-amber-400', bg: 'bg-amber-400', border: 'border-amber-500' },
+            [GrammarRole.ATTRIBUTE]: { text: 'text-indigo-400', bg: 'bg-indigo-400', border: 'border-indigo-500' },
+            [GrammarRole.PARTICLE]: { text: 'text-pink-400', bg: 'bg-pink-400', border: 'border-pink-500' },
+            [GrammarRole.INTERJECTION]: { text: 'text-gray-400', bg: 'bg-gray-400', border: 'border-gray-500' },
+            [GrammarRole.CONJUNCTION]: { text: 'text-teal-300', bg: 'bg-teal-300', border: 'border-teal-400' },
+            [GrammarRole.NUMERAL]: { text: 'text-orange-400', bg: 'bg-orange-400', border: 'border-orange-500' },
+            [GrammarRole.MEASURE_WORD]: { text: 'text-cyan-400', bg: 'bg-cyan-400', border: 'border-cyan-500' },
+            [GrammarRole.UNKNOWN]: { text: 'text-slate-400', bg: 'bg-slate-400', border: 'border-slate-500' },
         };
     }
     
     if (isSepia) {
         return {
             ...lightColors,
-            [GrammarRole.COMPLEMENT]: { text: 'text-orange-900', bg: 'bg-orange-200', border: 'border-orange-300' },
-            [GrammarRole.INTERJECTION]: { text: 'text-stone-800', bg: 'bg-stone-300', border: 'border-stone-400' },
-            [GrammarRole.UNKNOWN]: { text: 'text-stone-800', bg: 'bg-stone-300', border: 'border-stone-400' },
+            [GrammarRole.COMPLEMENT]: { text: 'text-orange-900', bg: 'bg-orange-500', border: 'border-orange-600' },
+            [GrammarRole.INTERJECTION]: { text: 'text-stone-800', bg: 'bg-stone-500', border: 'border-stone-600' },
+            [GrammarRole.UNKNOWN]: { text: 'text-stone-800', bg: 'bg-stone-500', border: 'border-stone-600' },
         };
     }
 
