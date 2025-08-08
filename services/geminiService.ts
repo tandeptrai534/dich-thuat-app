@@ -1,131 +1,167 @@
+
+
 import { GoogleGenAI, Type } from "@google/genai";
-import type { AnalyzedText, VocabularyItem } from '../types';
+import { GrammarRole, type AnalyzedText, type SpecialTerm } from '../types';
 
+const MODEL_NAME = 'gemini-2.5-flash';
 
-let ai: GoogleGenAI | null = null;
-let currentApiKey: string | null = null;
+const allowedGrammarRoles = Object.values(GrammarRole);
 
-const getAiClient = (apiKey: string): GoogleGenAI => {
-    if (!apiKey) {
-        throw new Error("API Key is missing. Please provide it in the settings.");
-    }
-    if (ai === null || currentApiKey !== apiKey) {
-        ai = new GoogleGenAI({ apiKey });
-        currentApiKey = apiKey;
-    }
-    return ai;
-};
-
-
-const analysisSystemInstruction = `You are an expert linguist and translator specializing in Chinese and Vietnamese. Your task is to perform a detailed grammatical analysis and translation of a single Chinese sentence.
-
-**RESPONSE FORMAT:**
-You MUST return the output as a single, valid JSON object that conforms to the provided schema. Do not include any text outside of the JSON object.
-
-**ANALYSIS & TRANSLATION RULES:**
-1.  **Tokenization:** Break down the Chinese sentence into its fundamental components (words, characters, punctuation). Each component is a "token".
-2.  **Detailed Token Information:** For each token, you must provide:
-    -   \`character\`: The original Chinese character(s).
-    -   \`pinyin\`: The correct Pinyin transcription.
-    -   \`sinoVietnamese\`: The Sino-Vietnamese (Hán Việt) reading.
-    -   \`vietnameseMeaning\`: A concise Vietnamese meaning of the token.
-    -   \`grammarRole\`: The grammatical function (Subject, Predicate, Object, etc.).Use "Unknown" if unclear.
-    -   \`grammarExplanation\`: A brief explanation of the token's role and meaning in the context of the sentence. **This explanation MUST be in VIETNAMESE.**
-3.  **Special Term Identification:**
-    -   Scan the sentence for multi-word proper nouns, idioms, or proverbs.
-    -   For each one found, create an object in the \`specialTerms\` array.
-    -   Each object MUST contain:
-        -   \`term\`: The full phrase in Chinese (e.g., "Bích Xà Tam Hoa Đồng").
-        -   \`sinoVietnamese\`: The precise Sino-Vietnamese (Hán Việt) reading of the term.
-        -   \`vietnameseTranslation\`: The natural Vietnamese translation of the term itself, as it would appear in a normal sentence. This is CRITICAL for the client-side 'Unify' feature.
-        -   \`category\`: The type, like 'Tên người', 'Địa danh', 'Công pháp', 'Thành ngữ'. Use 'Tiêu đề chương' if analyzing a chapter title.
-        -   \`explanation\`: A brief explanation of what it is, in Vietnamese (do NOT include the Hán Việt reading here).
-4.  **Full Translation:** Provide a single, complete, and natural Vietnamese translation for the entire sentence in the \`translation\` field. This MUST be a string. Pay close attention to spacing; words must be separated by a single space, e.g., "Hắn nhìn thấy một con rắn" is CORRECT, "Hắnnhìnthấy mộtconrắn" is WRONG.
-5.  **Sentence Grammar Structure:** After analyzing all tokens, provide a high-level summary of the sentence's overall grammatical structure in the \`sentenceGrammarExplanation\` field. Explain the main components (e.g., "Chủ ngữ + Vị ngữ + Bổ ngữ") and how they relate. This explanation MUST be in VIETNAMESE.
-6.  **Strict Translation Rules & Forced Terms:**
-    -   **ABSOLUTE RULE: FORCED SINO-VIETNAMESE TERMS:** This is the most important rule. If you are provided with a list of 'Forced Sino Terms', you MUST use their provided Sino-Vietnamese readings as their translation in the final Vietnamese output. NO EXCEPTIONS. For example, if a forced term is { term: "魔躯", sinoVietnamese: "Ma Khu" }, you MUST translate "魔躯" as "Ma Khu", not "Ma Thần" or anything else.
-    -   **Consistency:** For other proper nouns (names, places, etc.), translate using their Sino-Vietnamese (Hán Việt) reading.
-    -   **Pronouns:** 我 -> "ta", 你 -> "ngươi", 他 -> "hắn", 她 -> "nàng".
-    -   **Formatting:** The final Vietnamese translation must have correct, natural spacing between words.
-    -   **Completeness:** Translate everything. No Chinese characters should remain in the Vietnamese translation.
-    -   **Quality:** Correct all Vietnamese spelling errors before outputting.`;
-
-const analysisResponseSchema = {
+const analysisSchema = {
     type: Type.OBJECT,
     properties: {
         tokens: {
             type: Type.ARRAY,
-            description: "An array of token objects, one for each component of the original sentence.",
+            description: "Phân tích từng từ hoặc ký tự trong câu gốc.",
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    character: { type: Type.STRING, description: "The original Chinese character(s) for this token." },
-                    pinyin: { type: Type.STRING, description: "Pinyin transcription." },
-                    sinoVietnamese: { type: Type.STRING, description: "Sino-Vietnamese (Hán Việt) reading." },
-                    vietnameseMeaning: { type: Type.STRING, description: "The token's meaning in Vietnamese." },
-                    grammarRole: {
-                        type: Type.STRING,
-                        enum: [ 'Subject', 'Predicate', 'Object', 'Adverbial', 'Complement', 'Attribute', 'Particle', 'Interjection', 'Conjunction', 'Numeral', 'Measure Word', 'Unknown' ],
-                        description: "The grammatical role of the token."
+                    character: { type: Type.STRING, description: "Từ hoặc ký tự gốc." },
+                    pinyin: { type: Type.STRING, description: "Phiên âm Pinyin." },
+                    sinoVietnamese: { type: Type.STRING, description: "Âm Hán-Việt." },
+                    vietnameseMeaning: { type: Type.STRING, description: "Nghĩa tiếng Việt." },
+                    grammarRole: { 
+                        type: Type.STRING, 
+                        description: `Vai trò ngữ pháp. Phải là một trong các giá trị sau: ${allowedGrammarRoles.join(', ')}.`,
+                        enum: allowedGrammarRoles,
                     },
-                    grammarExplanation: { type: Type.STRING, description: "A brief explanation of the token's function in the sentence, written in Vietnamese." }
+                    grammarExplanation: { type: Type.STRING, description: "Giải thích ngắn gọn về vai trò ngữ pháp của từ này trong câu." }
                 },
                 required: ["character", "pinyin", "sinoVietnamese", "vietnameseMeaning", "grammarRole", "grammarExplanation"]
             }
         },
         translation: {
             type: Type.STRING,
-            description: "The full, natural Vietnamese translation of the sentence as a single string."
+            description: "Bản dịch tự nhiên, đầy đủ của câu sang tiếng Việt."
         },
         specialTerms: {
             type: Type.ARRAY,
-            description: "A list of identified meaningful phrases like proper nouns or idioms.",
+            description: "Danh sách các thuật ngữ đặc biệt như tên riêng, địa danh, công pháp, chiêu thức, vật phẩm, thành ngữ được tìm thấy trong câu.",
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    term: { type: Type.STRING, description: "The full Chinese phrase for the special term." },
-                    sinoVietnamese: { type: Type.STRING, description: "The Sino-Vietnamese (Hán Việt) reading of the term." },
-                    vietnameseTranslation: { type: Type.STRING, description: "The natural Vietnamese translation of the term, used for client-side replacement." },
-                    category: { type: Type.STRING, description: "The category of the term (e.g., Tên người, Thành ngữ, Tiêu đề chương)." },
-                    explanation: { type: Type.STRING, description: "A brief explanation of the term (excluding the Hán-Việt reading)."}
+                    term: { type: Type.STRING, description: "Thuật ngữ gốc bằng tiếng Trung." },
+                    sinoVietnamese: { type: Type.STRING, description: "Âm Hán-Việt của thuật ngữ." },
+                    vietnameseTranslation: { type: Type.STRING, description: "Bản dịch hoặc tên tiếng Việt tương ứng của thuật ngữ." },
+                    category: { type: Type.STRING, description: "Phân loại thuật ngữ (Tên người, Địa danh, Công pháp, Chiêu thức, Vật phẩm, Tổ chức, Thành ngữ, Tục ngữ, Tiêu đề chương, Khác)." },
+                    explanation: { type: Type.STRING, description: "Giải thích ngắn gọn về thuật ngữ." }
                 },
                 required: ["term", "sinoVietnamese", "vietnameseTranslation", "category", "explanation"]
             }
         },
         sentenceGrammarExplanation: {
             type: Type.STRING,
-            description: "A high-level explanation of the entire sentence's grammatical structure, written in Vietnamese."
+            description: "Giải thích tổng quan về cấu trúc ngữ pháp của toàn bộ câu."
         }
     },
     required: ["tokens", "translation", "specialTerms", "sentenceGrammarExplanation"]
 };
 
-const batchTranslateSystemInstruction = `You are an expert translator specializing in Chinese and Vietnamese. Your task is to translate a batch of Chinese sentences into Vietnamese.
+export const analyzeSentence = async (apiKey: string, sentence: string, forcedSinoTerms: { term: string; sinoVietnamese: string; }[] = []): Promise<AnalyzedText> => {
+    const ai = new GoogleGenAI({ apiKey });
+    let sinoInstruction = "";
+    if (forcedSinoTerms.length > 0) {
+        const termsList = forcedSinoTerms.map(t => `- "${t.term}": "${t.sinoVietnamese}"`).join('\n');
+        sinoInstruction = `Lưu ý quan trọng: Khi xác định âm Hán-Việt, hãy ưu tiên sử dụng các cách đọc sau cho những thuật ngữ này:\n${termsList}\n`;
+    }
 
-**INPUT:**
-You will receive a JSON array of strings, where each string is a Chinese sentence. An optional list of 'Forced Sino Terms' may also be provided.
+    const systemInstruction = `Bạn là một chuyên gia ngôn ngữ và dịch thuật Trung-Việt. Nhiệm vụ của bạn là phân tích chi tiết một câu tiếng Trung.
+    1.  Chia câu thành các từ (hoặc ký tự nếu cần).
+    2.  Với mỗi từ, cung cấp phiên âm Pinyin, âm Hán-Việt, nghĩa tiếng Việt chính xác nhất trong ngữ cảnh, và vai trò ngữ pháp của nó trong câu. Vai trò ngữ pháp phải là một trong các giá trị sau: ${allowedGrammarRoles.join(', ')}.
+    3.  Dịch toàn bộ câu sang tiếng Việt một cách tự nhiên và mượt mà.
+    4.  Xác định các thuật ngữ đặc biệt (tên người, địa danh, công pháp, v.v.) và cung cấp thông tin chi tiết về chúng.
+    5.  Cung cấp một giải thích tổng quan về cấu trúc ngữ pháp của câu.
+    ${sinoInstruction}
+    QUY TẮC DỊCH ĐẶC BIỆT: Luôn dịch các đại từ sau theo quy tắc: 我 -> ta, 你 -> ngươi, 他 -> hắn, 她 -> nàng.
+    Hãy trả về kết quả dưới dạng một đối tượng JSON tuân thủ theo schema đã cung cấp.`;
 
-**OUTPUT:**
-You MUST return a single, valid JSON object with a single key "translations". The value of "translations" must be an array of strings.
-- Each string in the output array is the Vietnamese translation of the corresponding sentence in the input array.
-- The order MUST be preserved.
-- The output array MUST have the exact same number of items as the input array.
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: `Phân tích câu sau: "${sentence}"`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: analysisSchema,
+                systemInstruction: systemInstruction,
+            },
+        });
 
-**TRANSLATION RULES:**
-1.  **ABSOLUTE RULE: FORCED SINO-VIETNAMESE TERMS:** This is the most important rule. If you are provided with a list of 'Forced Sino Terms' (Chinese term and its Hán Việt reading), you MUST use the provided Hán Việt reading as the translation for that exact Chinese term wherever it appears. This rule is absolute and overrides all others. For example, if a forced term is { term: "魔躯", sinoVietnamese: "Ma Khu" }, you must translate "魔躯" as "Ma Khu", not "Ma Thần" or anything else.
-2.  **SPACING:** The final Vietnamese translation MUST have correct, natural spacing between words. Do NOT return text with words joined together without spaces. For example, "Sư huynhcóbiết" is WRONG. "Sư huynh có biết" is CORRECT.
-3.  **Pronouns:** 我 -> "ta", 你 -> "ngươi", 他 -> "hắn", 她 -> "nàng".
-4.  **Consistency:** For other proper nouns not in the forced list, translate using Sino-Vietnamese (Hán Việt) readings.
-5.  **Quality:** Provide natural, fluent translations. Correct any spelling errors.
-6.  **Format:** Return ONLY the JSON object. Do not add any other text, explanations, or markdown.
-`;
+        const jsonText = response.text.trim();
+        const result = JSON.parse(jsonText) as AnalyzedText;
+        return result;
 
-const batchTranslateResponseSchema = {
+    } catch (error) {
+        console.error("Error analyzing sentence with Gemini:", error);
+        if (error instanceof Error) {
+            throw new Error(`Lỗi Gemini API: ${error.message}`);
+        }
+        throw new Error("Lỗi không xác định khi phân tích câu.");
+    }
+};
+
+const batchAnalysisSchema = {
+    type: Type.OBJECT,
+    properties: {
+        analyses: {
+            type: Type.ARRAY,
+            description: "Một mảng các kết quả phân tích, mỗi mục tương ứng với một câu đầu vào.",
+            items: analysisSchema
+        }
+    },
+    required: ["analyses"]
+};
+
+export const analyzeSentencesInBatch = async (apiKey: string, sentences: string[], forcedSinoTerms: { term: string; sinoVietnamese: string; }[] = []): Promise<AnalyzedText[]> => {
+    if (sentences.length === 0) return [];
+    const ai = new GoogleGenAI({ apiKey });
+    
+    let sinoInstruction = "";
+    if (forcedSinoTerms.length > 0) {
+        const termsList = forcedSinoTerms.map(t => `- "${t.term}": "${t.sinoVietnamese}"`).join('\n');
+        sinoInstruction = `Lưu ý quan trọng: Khi xác định âm Hán-Việt, hãy ưu tiên sử dụng các cách đọc sau cho những thuật ngữ này:\n${termsList}\n`;
+    }
+
+    const systemInstruction = `Bạn là một chuyên gia ngôn ngữ và dịch thuật Trung-Việt. Nhiệm vụ của bạn là phân tích chi tiết một danh sách các câu tiếng Trung. Với mỗi câu, hãy thực hiện đầy đủ các bước như phân tích từ, dịch thuật, nhận diện thuật ngữ, và giải thích ngữ pháp. Vai trò ngữ pháp cho mỗi từ phải là một trong các giá trị sau: ${allowedGrammarRoles.join(', ')}. QUY TẮC DỊCH ĐẶC BIỆT: Luôn dịch các đại từ sau theo quy tắc: 我 -> ta, 你 -> ngươi, 他 -> hắn, 她 -> nàng. ${sinoInstruction}Hãy trả về kết quả dưới dạng một đối tượng JSON duy nhất chứa một mảng 'analyses', trong đó mỗi mục của mảng là một đối tượng JSON phân tích chi tiết cho một câu, tuân thủ theo schema đã cung cấp.`;
+
+    const content = `Phân tích các câu sau đây: ${JSON.stringify(sentences)}`;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: content,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: batchAnalysisSchema,
+                systemInstruction: systemInstruction,
+            },
+        });
+        
+        const jsonText = response.text.trim();
+        const result = JSON.parse(jsonText);
+
+        if (result && Array.isArray(result.analyses) && result.analyses.length === sentences.length) {
+            return result.analyses;
+        } else {
+            console.error("Batch analysis response mismatch.", "Expected:", sentences.length, "Got:", result.analyses?.length);
+            throw new Error("Số lượng câu phân tích trả về không khớp với số lượng câu đầu vào.");
+        }
+
+    } catch (error) {
+        console.error("Error in batch analysis with Gemini:", error);
+         if (error instanceof Error) {
+            throw new Error(`Lỗi Gemini API: ${error.message}`);
+        }
+        throw new Error("Lỗi không xác định khi phân tích hàng loạt.");
+    }
+};
+
+
+const batchTranslationSchema = {
     type: Type.OBJECT,
     properties: {
         translations: {
             type: Type.ARRAY,
-            description: "An array of Vietnamese translation strings, corresponding one-to-one with the input sentences.",
+            description: "Một mảng các chuỗi, mỗi chuỗi là một câu dịch tiếng Việt.",
             items: {
                 type: Type.STRING
             }
@@ -134,89 +170,44 @@ const batchTranslateResponseSchema = {
     required: ["translations"]
 };
 
-const buildPromptWithForcedTerms = (basePrompt: string, forcedSinoTerms: { term: string; sinoVietnamese: string }[]): string => {
-    if (forcedSinoTerms.length === 0) {
-        return basePrompt;
-    }
-    const termsList = JSON.stringify(forcedSinoTerms);
-    return `${basePrompt}\n\nHere is a list of 'Forced Sino Terms' you must adhere to: ${termsList}`;
-};
-
-export const analyzeSentence = async (sentence: string, apiKey: string, forcedSinoTerms: { term: string; sinoVietnamese: string }[] = []): Promise<AnalyzedText> => {
-    const client = getAiClient(apiKey);
-    const prompt = buildPromptWithForcedTerms(`Please analyze and translate this sentence: "${sentence}"`, forcedSinoTerms);
-
-    try {
-        const response = await client.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: {
-                systemInstruction: analysisSystemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: analysisResponseSchema,
-                temperature: 0.1,
-            },
-        });
-        
-        const responseText = response.text.trim();
-        if (!responseText) {
-            throw new Error("API returned an empty response.");
-        }
-
-        const parsedJson = JSON.parse(responseText);
-        
-        if (!parsedJson.tokens || !parsedJson.translation || !parsedJson.sentenceGrammarExplanation) {
-             throw new Error("Invalid JSON structure received from API.");
-        }
-
-        return parsedJson as AnalyzedText;
-
-    } catch (error) {
-        console.error("Gemini API call for sentence analysis failed:", error);
-        if (error instanceof Error) {
-             throw new Error(`Lỗi từ API Gemini: ${error.message}`);
-        }
-        throw new Error("Lỗi không xác định khi gọi API Gemini.");
-    }
-};
-
-export const translateSentencesInBatch = async (sentences: string[], apiKey: string, forcedSinoTerms: { term: string; sinoVietnamese: string }[] = []): Promise<string[]> => {
-    if (sentences.length === 0) {
-        return [];
-    }
+export const translateSentencesInBatch = async (apiKey: string, sentences: string[], forcedSinoTerms: { term: string; sinoVietnamese: string; }[] = []): Promise<string[]> => {
+    if (sentences.length === 0) return [];
+    const ai = new GoogleGenAI({ apiKey });
     
-    const client = getAiClient(apiKey);
-    const prompt = buildPromptWithForcedTerms(`Please translate this batch of sentences: ${JSON.stringify(sentences)}`, forcedSinoTerms);
+    let sinoInstruction = "";
+    if (forcedSinoTerms.length > 0) {
+        const termsList = forcedSinoTerms.map(t => `- "${t.term}": "${t.sinoVietnamese}"`).join('\n');
+        sinoInstruction = `Lưu ý: Khi dịch, hãy ưu tiên sử dụng các thuật ngữ Hán-Việt đã được định nghĩa sau đây nếu chúng xuất hiện trong câu: ${termsList}. Điều này giúp đảm bảo tính nhất quán trong bản dịch.`;
+    }
+
+    const systemInstruction = `Bạn là một dịch giả chuyên nghiệp từ tiếng Trung sang tiếng Việt. Dịch các câu sau một cách chính xác và tự nhiên. QUY TẮC DỊCH ĐẶC BIỆT: Luôn dịch các đại từ sau theo quy tắc: 我 -> ta, 你 -> ngươi, 他 -> hắn, 她 -> nàng. ${sinoInstruction} Trả về kết quả dưới dạng một đối tượng JSON chứa một mảng các chuỗi, trong đó mỗi chuỗi tương ứng với một câu dịch.`;
+    
+    const content = `Dịch các câu sau đây: ${JSON.stringify(sentences)}`;
 
     try {
-        const response = await client.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: content,
             config: {
-                systemInstruction: batchTranslateSystemInstruction,
                 responseMimeType: "application/json",
-                responseSchema: batchTranslateResponseSchema,
-                temperature: 0.2,
+                responseSchema: batchTranslationSchema,
+                systemInstruction: systemInstruction,
             },
         });
         
-        const responseText = response.text.trim();
-        if (!responseText) {
-            throw new Error("API returned an empty translation response.");
-        }
-        
-        const parsedJson = JSON.parse(responseText);
+        const jsonText = response.text.trim();
+        const result = JSON.parse(jsonText);
 
-        if (!parsedJson.translations || !Array.isArray(parsedJson.translations) || parsedJson.translations.length !== sentences.length) {
-            throw new Error("Invalid or mismatched translation data received from API.");
+        if (result && Array.isArray(result.translations) && result.translations.length === sentences.length) {
+            return result.translations;
+        } else {
+            throw new Error("Số lượng câu dịch trả về không khớp với số lượng câu đầu vào.");
         }
-
-        return parsedJson.translations;
 
     } catch (error) {
-        console.error("Gemini API call for batch translation failed:", error);
-        if (error instanceof Error) {
-             throw new Error(`Lỗi dịch thuật từ API Gemini: ${error.message}`);
+        console.error("Error in batch translation with Gemini:", error);
+         if (error instanceof Error) {
+            throw new Error(`Lỗi Gemini API: ${error.message}`);
         }
         throw new Error("Lỗi không xác định khi dịch hàng loạt.");
     }

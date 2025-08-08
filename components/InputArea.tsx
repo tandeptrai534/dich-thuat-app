@@ -1,40 +1,46 @@
 
-import React, { useRef, useState } from 'react';
-import { Spinner } from './common/Spinner';
-import { GoogleIcon, UploadIcon } from './common/icons';
-import { useSettings } from '../contexts/settingsContext';
+
+import React, { useState, useRef, useCallback } from 'react';
+import { useSettings } from '@/contexts/settingsContext';
+import { DocumentTextIcon, UploadIcon, GoogleIcon } from '@/components/common/icons';
 
 interface InputAreaProps {
-    onProcess: (text: string, fileName: string) => void;
-    onFileUpload?: (text: string, fileName: string) => void;
+    onNewText: (text: string, fileName?: string) => void | Promise<void>;
+    onNewFile: (text: string, fileName: string) => void | Promise<void>;
+    onNewFromDrive: () => void;
+    onUploadRawFileToDrive: (file: File) => void;
     isLoading: boolean;
     isLoggedIn: boolean;
-    onOpenDrive?: () => void;
 }
 
-export const InputArea: React.FC<InputAreaProps> = ({ onProcess, onFileUpload, isLoading, isLoggedIn, onOpenDrive }) => {
-    const [inputText, setInputText] = useState<string>('');
-    const fileInputRef = useRef<HTMLInputElement>(null);
+export const InputArea: React.FC<InputAreaProps> = ({ onNewText, onNewFile, onNewFromDrive, onUploadRawFileToDrive, isLoading, isLoggedIn }) => {
     const { theme } = useSettings();
+    const [text, setText] = useState('');
+    const [saveToDrive, setSaveToDrive] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
+            if (isLoggedIn && saveToDrive) {
+                onUploadRawFileToDrive(file);
+            }
+            
             const reader = new FileReader();
             reader.onload = (e) => {
-                const text = e.target?.result as string;
-                if (onFileUpload) {
-                    onFileUpload(text, file.name);
-                } else {
-                    onProcess(text, file.name);
-                }
-            };
-            reader.onerror = () => {
-                alert('Lỗi: Không thể đọc tệp.');
+                const fileContent = e.target?.result as string;
+                onNewFile(fileContent, file.name);
             };
             reader.readAsText(file, 'UTF-8');
-             // Reset file input to allow uploading the same file again
+            // Reset the input's value to allow uploading the same file again
             event.target.value = '';
+        }
+    };
+    
+    const handleCreateProject = () => {
+        if (text.trim()) {
+            onNewText(text);
+            setText(''); // Clear textarea after submission
         }
     };
 
@@ -42,68 +48,71 @@ export const InputArea: React.FC<InputAreaProps> = ({ onProcess, onFileUpload, i
         fileInputRef.current?.click();
     };
 
-    const handleProcessClick = () => {
-        onProcess(inputText, `Văn bản dán - ${new Date().toLocaleString()}`);
-    };
-    
     return (
-        <div className={`${theme.cardBg} p-6 rounded-2xl shadow-lg border ${theme.border}`}>
-            <div className="flex flex-col gap-4">
-                <h2 className={`text-lg font-semibold ${theme.text}`}>Bắt đầu bằng cách nhập văn bản hoặc tải lên tệp</h2>
-                
-                <div className="relative">
-                    <textarea
-                        value={inputText}
-                        onChange={(e) => setInputText(e.target.value)}
-                        placeholder="Dán văn bản tiếng Trung vào đây..."
-                        className={`w-full h-48 p-4 border ${theme.border} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow resize-y shadow-sm ${theme.cardBg} ${theme.text}`}
-                        disabled={isLoading}
-                    />
-                </div>
-                <div className="flex flex-col sm:flex-row gap-3">
-                    <button
-                        onClick={handleProcessClick}
-                        disabled={isLoading || !inputText.trim()}
-                        className={`w-full sm:w-auto flex-grow flex items-center justify-center px-6 py-3 ${theme.primaryButton.bg} ${theme.primaryButton.text} font-bold rounded-lg shadow-md ${theme.primaryButton.hoverBg} disabled:bg-slate-400 disabled:cursor-not-allowed transition-all transform hover:scale-105 disabled:scale-100`}
-                    >
-                        {isLoading ? (
-                            <>
-                                <Spinner />
-                                <span className="ml-2">Đang xử lý...</span>
-                            </>
-                        ) : (
-                            'Xử lý Văn bản'
-                        )}
-                    </button>
-                    <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={handleFileChange}
-                        className="hidden"
-                        accept=".txt,.doc,.docx"
-                        disabled={isLoading}
-                    />
-                    <button
-                        onClick={handleUploadClick}
-                        disabled={isLoading}
-                        className={`w-full sm:w-auto flex items-center justify-center px-4 py-3 border ${theme.border} ${theme.cardBg} ${theme.text} font-semibold rounded-lg shadow-sm ${theme.hoverBg} disabled:bg-slate-200 disabled:cursor-not-allowed transition-colors`}
-                    >
-                        <UploadIcon className="w-5 h-5 mr-2" />
-                        Tải lên tệp .txt
-                    </button>
-                    {isLoggedIn && onOpenDrive && (
-                        <button
-                            onClick={onOpenDrive}
-                            disabled={isLoading}
-                            className={`w-full sm:w-auto flex items-center justify-center px-4 py-3 border ${theme.border} ${theme.cardBg} ${theme.text} font-semibold rounded-lg shadow-sm ${theme.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
-                            title="Mở tệp từ Google Drive"
-                        >
-                            <GoogleIcon className="w-5 h-5 mr-2" />
-                            Mở từ Drive
-                        </button>
-                    )}
-                </div>
+        <div className={`p-6 rounded-xl shadow-lg border ${theme.border} ${theme.cardBg}`}>
+            <h2 className={`text-2xl font-bold mb-4 ${theme.text}`}>Tạo dự án mới</h2>
+            <div className={`border-t ${theme.border} mb-4`}></div>
+            <p className={`mb-4 ${theme.mutedText}`}>
+                Dán trực tiếp văn bản vào ô bên dưới hoặc tải lên một tệp tin `.txt` để bắt đầu. Ứng dụng sẽ tự động tách các chương cho bạn.
+            </p>
+            <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Dán văn bản tiếng Trung của bạn vào đây..."
+                className={`w-full p-3 border ${theme.border} rounded-lg shadow-inner focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${theme.mainBg} ${theme.text} min-h-[12rem]`}
+                disabled={isLoading}
+            />
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <button
+                    onClick={handleCreateProject}
+                    disabled={isLoading || !text.trim()}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.primaryButton.bg} ${theme.primaryButton.text} ${theme.primaryButton.hoverBg} disabled:opacity-50 disabled:cursor-not-allowed lg:col-span-1`}
+                >
+                    <DocumentTextIcon className="w-5 h-5" />
+                    Tạo từ văn bản
+                </button>
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    className="hidden"
+                    accept=".txt"
+                    disabled={isLoading}
+                />
+                <button
+                    onClick={handleUploadClick}
+                    disabled={isLoading}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} border ${theme.border} disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                    <UploadIcon className="w-5 h-5" />
+                    Tải lên tệp .txt
+                </button>
+                 <button
+                    onClick={onNewFromDrive}
+                    disabled={isLoading || !isLoggedIn}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 font-semibold rounded-lg shadow-sm transition-colors ${theme.button.bg} ${theme.button.text} ${theme.button.hoverBg} border ${theme.border} disabled:opacity-50 disabled:cursor-not-allowed`}
+                    title={!isLoggedIn ? "Vui lòng đăng nhập Google để sử dụng" : "Tải lên tệp .txt từ Google Drive"}
+                >
+                    <GoogleIcon className="w-5 h-5" />
+                    Tải từ Google Drive
+                </button>
             </div>
+            {isLoggedIn && (
+                <div className="mt-4">
+                    <label htmlFor="saveToDriveCheckbox" className="flex items-center gap-2 cursor-pointer w-fit">
+                        <input
+                            id="saveToDriveCheckbox"
+                            type="checkbox"
+                            checked={saveToDrive}
+                            onChange={(e) => setSaveToDrive(e.target.checked)}
+                            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className={`text-sm ${theme.mutedText}`}>
+                            Khi tải lên từ máy, đồng thời lưu một bản sao của tệp gốc vào Google Drive.
+                        </span>
+                    </label>
+                </div>
+            )}
         </div>
     );
 };

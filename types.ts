@@ -1,5 +1,6 @@
 
 
+
 export interface ApiError {
     message: string;
 }
@@ -58,30 +59,34 @@ export interface ChapterData {
     isBatchAnalyzing?: boolean;
     batchAnalysisProgress?: number; 
     
-    isLoaded: boolean; // Has the content been loaded from Drive for this session?
+    isLoaded: boolean; // Has the content been loaded from Drive or parsed from rawContent for this session?
     hasCache?: boolean; // Does a .cache.json file exist on Drive?
     chapterError?: string;
+    rawContent?: string; // Used for lazy loading local project chapters
 }
 
 
 export interface ProjectData {
-    id: string; // driveFolderId serves as the unique ID
+    id: string; // driveFolderId serves as the unique ID for Drive projects, local projects get a UUID
     fileName: string;
-    driveFolderId: string;
+    driveFolderId?: string; // Optional, only for Drive-synced projects
     chapters: ChapterData[];
     visibleRange: {
         start: number;
         end: number;
     };
     pageSize: number;
+    lastModified: string;
 }
 
 
 export interface WorkspaceItem {
-    driveFolderId: string;
+    id: string; // Can be driveFolderId or local project ID
+    driveFolderId?: string;
     name: string;
-    type: 'file' | 'text'; // Kept for potential future use, but everything is a "project" now
+    type: 'file' | 'text';
     lastModified: string;
+    source: 'local' | 'drive';
 }
 
 
@@ -141,4 +146,12 @@ export interface VocabularyItem {
     explanation: string;
     firstLocation: VocabularyLocation; 
     isForceSino: boolean; 
+}
+
+// --- Service Types ---
+export interface DriveFile {
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedTime: string;
 }

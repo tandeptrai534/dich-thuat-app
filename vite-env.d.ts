@@ -1,12 +1,9 @@
+
 // This file provides type definitions for Vite's `import.meta.env` feature.
 // By defining the ImportMeta interface, we inform TypeScript about the
 // shape of the environment variables, resolving type-related errors.
 
 interface ImportMetaEnv {
-  /**
-   * The API key for the Gemini service.
-   */
-  readonly VITE_API_KEY?: string;
   /**
    * The Google Client ID for OAuth and Google Drive integration.
    */
